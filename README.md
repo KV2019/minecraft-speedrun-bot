@@ -63,3 +63,17 @@ If you want to test outside the Gradle dev client later, build the mod jar and p
 ## Build
 
 Use a Java 21 JDK. If Gradle is installed, you can generate a wrapper with `gradle wrapper`, then build with `gradlew build`.
+
+## One Command Client Restart
+
+To kill the previous workspace dev client and start a fresh one:
+
+PowerShell:
+
+.
+\scripts\run-client.ps1
+
+If you want to skip the build step and relaunch faster:
+
+.
+\scripts\run-client.ps1 -SkipBuild

@@ -15,8 +15,14 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class AutoMineNearestLogTask implements BotTask {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AutoMineNearestLogTask.class);
+    private static final boolean DEBUG_TELEMETRY = true;
+    private static final int DEBUG_PRINT_INTERVAL_TICKS = 10;
+
     private static final int SEARCH_RADIUS_XZ = 8;
     private static final int SEARCH_RADIUS_Y = 4;
     private static final double MINE_RANGE_SQ = 4.5 * 4.5;
@@ -45,6 +51,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         targetAgeTicks = 0;
         targetMissingTicks = 0;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
+        debug(context, "start logs=" + startingLogItemCount);
     }
 
     @Override
@@ -54,6 +61,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (countLogItems(context.player()) > startingLogItemCount) {
             completed = true;
             context.player().sendMessage(Text.literal("[SpeedrunBot] Collected log item"), true);
+            debug(context, "finish reason=collected_log");
             return;
         }
 
@@ -68,6 +76,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             targetMissingTicks++;
             if (targetMissingTicks < 20) {
                 moveToward(context, Vec3d.ofCenter(targetLog), 14);
+                debug(context, "target_missing grace=" + targetMissingTicks + " target=" + targetLog.toShortString());
                 return;
             }
 
@@ -75,6 +84,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             targetMissingTicks = 0;
             targetAgeTicks = 0;
             retargetCooldown = 10;
+            debug(context, "drop_target reason=missing_too_long");
         }
 
         if (targetLog == null && retargetCooldown == 0) {
@@ -87,6 +97,9 @@ public final class AutoMineNearestLogTask implements BotTask {
                     Text.literal("[SpeedrunBot] Target log at " + targetLog.toShortString()),
                     true
                 );
+                debug(context, "acquire_target pos=" + targetLog.toShortString());
+            } else {
+                debug(context, "acquire_target none");
             }
         }
 
@@ -97,6 +110,7 @@ public final class AutoMineNearestLogTask implements BotTask {
                 context.player().getRotationVec(1.0F).add(context.player().getX(), context.player().getY(), context.player().getZ()),
                 24
             );
+            debug(context, "roam no_target cooldown=" + retargetCooldown);
             return;
         }
 
@@ -107,6 +121,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             targetAgeTicks = 0;
             targetMissingTicks = 0;
             retargetCooldown = 20;
+            debug(context, "drop_target reason=aged_out");
             return;
         }
 
@@ -116,6 +131,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
         if (distanceSq > MINE_RANGE_SQ) {
             moveToward(context, targetCenter, 12);
+            debug(context, "move_to_target dist=" + String.format("%.2f", Math.sqrt(distanceSq)) + " target=" + targetLog.toShortString());
             return;
         }
 
@@ -128,6 +144,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (mineTarget == null) {
             // Path around obstacles by continuing to move and occasionally hop.
             moveToward(context, targetCenter, 14);
+            debug(context, "mine_target none (obstructed) target=" + targetLog.toShortString());
             return;
         }
 
@@ -138,6 +155,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         interaction.updateBlockBreakingProgress(mineTarget, hitSide);
         context.player().swingHand(Hand.MAIN_HAND);
         context.actions().setAttack(true);
+        debug(context, "mine block=" + mineTarget.toShortString() + " hitSide=" + hitSide);
 
         // Do not complete on client-side prediction; keep going until we actually pick up a log.
         if (!isLog(context, targetLog)) {
@@ -145,11 +163,15 @@ public final class AutoMineNearestLogTask implements BotTask {
             retargetCooldown = 0;
             targetAgeTicks = 0;
             targetMissingTicks = 0;
+            debug(context, "target_log_not_present waiting_for_pickup_or_new_target");
         }
     }
 
     @Override
     public boolean isFinished(BotContext context) {
+        if (ticks >= MAX_TICKS && !completed) {
+            debug(context, "finish reason=timeout");
+        }
         return completed || ticks >= MAX_TICKS;
     }
 
@@ -167,6 +189,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         startingLogItemCount = 0;
         targetAgeTicks = 0;
         targetMissingTicks = 0;
+        debug(context, "stop");
     }
 
     private static BlockPos findNearestLog(BotContext context) {
@@ -279,6 +302,33 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (player.isOnGround() && jumpPeriodTicks > 0 && player.age % jumpPeriodTicks == 0) {
             context.actions().setJump(true);
         }
+    }
+
+    private void debug(BotContext context, String message) {
+        if (!DEBUG_TELEMETRY) {
+            return;
+        }
+
+        if (ticks % DEBUG_PRINT_INTERVAL_TICKS != 0 &&
+            !message.startsWith("start") &&
+            !message.startsWith("finish") &&
+            !message.startsWith("stop") &&
+            !message.startsWith("acquire_target") &&
+            !message.startsWith("drop_target")) {
+            return;
+        }
+
+        String target = targetLog == null ? "none" : targetLog.toShortString();
+        int logs = countLogItems(context.player());
+        String line = "[SBOT] " + message +
+            " | t=" + ticks +
+            " target=" + target +
+            " age=" + targetAgeTicks +
+            " miss=" + targetMissingTicks +
+            " logs=" + logs;
+
+        LOGGER.info(line);
+        context.player().sendMessage(Text.literal(line), true);
     }
 
     private static void lookAt(ClientPlayerEntity player, Vec3d target) {
