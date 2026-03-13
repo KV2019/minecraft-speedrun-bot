@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "speedrunbot",
+  "version": "${version}",
+  "name": "Speedrun Bot Base",
+  "description": "Client-side scaffold for a Minecraft speedrunning bot.",
+  "authors": [
+    "GitHub Copilot"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.speedrunbot.SpeedrunBotClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "fabric-api": "*",
+    "minecraft": "1.21.11",
+    "java": ">=21"
+  }
+}
