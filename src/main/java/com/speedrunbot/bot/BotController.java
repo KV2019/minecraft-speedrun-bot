@@ -1,6 +1,7 @@
 package com.speedrunbot.bot;
 
 import com.speedrunbot.bot.task.BotTask;
+import com.speedrunbot.bot.task.AutoMineNearestLogTask;
 import com.speedrunbot.bot.task.LookAroundTask;
 import com.speedrunbot.bot.task.MoveForwardTask;
 import com.speedrunbot.bot.task.StatusOverlayTask;
@@ -11,6 +12,7 @@ import net.minecraft.text.Text;
 public final class BotController {
     private final PlayerActionController actionController = new PlayerActionController();
     private final List<BotTask> tasks = List.of(
+        new AutoMineNearestLogTask(),
         new MoveForwardTask(),
         new LookAroundTask(),
         new StatusOverlayTask()
