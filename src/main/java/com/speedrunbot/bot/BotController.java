@@ -1,21 +1,17 @@
 package com.speedrunbot.bot;
 
+import com.speedrunbot.bot.navigation.Navigator;
 import com.speedrunbot.bot.task.BotTask;
 import com.speedrunbot.bot.task.AutoMineNearestLogTask;
-import com.speedrunbot.bot.task.LookAroundTask;
-import com.speedrunbot.bot.task.MoveForwardTask;
-import com.speedrunbot.bot.task.StatusOverlayTask;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
 
 public final class BotController {
     private final PlayerActionController actionController = new PlayerActionController();
+    private final Navigator navigator = new Navigator();
     private final List<BotTask> tasks = List.of(
-        new AutoMineNearestLogTask(),
-        new MoveForwardTask(),
-        new LookAroundTask(),
-        new StatusOverlayTask()
+        new AutoMineNearestLogTask()
     );
 
     private boolean running;
@@ -36,10 +32,10 @@ public final class BotController {
     }
 
     public void advanceTask(MinecraftClient client) {
+        // Single-task mode: pressing N restarts the current task.
         stopActiveTask(client);
-        activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
         taskStarted = false;
-        sendStatus(client, "Selected task: " + activeTask().name());
+        sendStatus(client, "Restarted task: " + activeTask().name());
     }
 
     public void onEndTick(MinecraftClient client) {
@@ -48,7 +44,7 @@ public final class BotController {
             return;
         }
 
-        BotContext context = BotContext.from(client, actionController);
+        BotContext context = BotContext.from(client, actionController, navigator);
         if (!context.isReady()) {
             actionController.releaseAll(client);
             return;
@@ -67,9 +63,8 @@ public final class BotController {
         if (activeTask().isFinished(context)) {
             activeTask().stop(context);
             actionController.releaseAll(client);
-            activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
             taskStarted = false;
-            sendStatus(client, "Advanced to task: " + activeTask().name());
+            sendStatus(client, "Task complete: " + activeTask().name());
         }
     }
 
@@ -82,7 +77,7 @@ public final class BotController {
             return;
         }
 
-        BotContext context = BotContext.from(client, actionController);
+        BotContext context = BotContext.from(client, actionController, navigator);
         if (!context.isReady()) {
             taskStarted = false;
             return;
