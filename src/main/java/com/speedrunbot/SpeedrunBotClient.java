@@ -6,10 +6,14 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 public final class SpeedrunBotClient implements ClientModInitializer {
     private static final BotController BOT_CONTROLLER = new BotController();
+    private static final KeyBinding.Category BOT_CATEGORY = KeyBinding.Category.create(
+        Identifier.of("speedrunbot", "controls")
+    );
 
     private KeyBinding toggleBotKey;
     private KeyBinding nextTaskKey;
@@ -20,14 +24,14 @@ public final class SpeedrunBotClient implements ClientModInitializer {
             "key.speedrunbot.toggle",
             InputUtil.Type.KEYSYM,
             GLFW.GLFW_KEY_B,
-            "category.speedrunbot.controls"
+            BOT_CATEGORY
         ));
 
         nextTaskKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
             "key.speedrunbot.next_task",
             InputUtil.Type.KEYSYM,
             GLFW.GLFW_KEY_N,
-            "category.speedrunbot.controls"
+            BOT_CATEGORY
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
