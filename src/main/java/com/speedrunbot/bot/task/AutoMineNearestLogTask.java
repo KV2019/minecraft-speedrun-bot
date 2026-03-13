@@ -27,6 +27,8 @@ public final class AutoMineNearestLogTask implements BotTask {
     private boolean completed;
     private int retargetCooldown;
     private int startingLogItemCount;
+    private int targetAgeTicks;
+    private int targetMissingTicks;
 
     @Override
     public String name() {
@@ -40,6 +42,8 @@ public final class AutoMineNearestLogTask implements BotTask {
         completed = false;
         retargetCooldown = 0;
         startingLogItemCount = countLogItems(context.player());
+        targetAgeTicks = 0;
+        targetMissingTicks = 0;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
     }
 
@@ -57,9 +61,26 @@ public final class AutoMineNearestLogTask implements BotTask {
             retargetCooldown--;
         }
 
-        if (targetLog == null || !isLog(context, targetLog)) {
-            targetLog = findNearestLog(context);
+        if (targetLog != null && isLog(context, targetLog)) {
+            targetMissingTicks = 0;
+        } else if (targetLog != null) {
+            // Keep the target for a short time to allow server corrections/drop pickup.
+            targetMissingTicks++;
+            if (targetMissingTicks < 20) {
+                moveToward(context, Vec3d.ofCenter(targetLog), 14);
+                return;
+            }
+
+            targetLog = null;
+            targetMissingTicks = 0;
+            targetAgeTicks = 0;
             retargetCooldown = 10;
+        }
+
+        if (targetLog == null && retargetCooldown == 0) {
+            targetLog = findNearestLog(context);
+            retargetCooldown = 20;
+            targetAgeTicks = 0;
 
             if (targetLog != null) {
                 context.player().sendMessage(
@@ -71,11 +92,21 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         if (targetLog == null) {
             // Gentle roam so the bot can discover trees without standing still forever.
-            context.actions().setForward(true);
-            context.actions().setSprint(true);
-            if (context.player().isOnGround() && ticks % 24 == 0) {
-                context.actions().setJump(true);
-            }
+            moveToward(
+                context,
+                context.player().getRotationVec(1.0F).add(context.player().getX(), context.player().getY(), context.player().getZ()),
+                24
+            );
+            return;
+        }
+
+        targetAgeTicks++;
+        if (targetAgeTicks > 20 * 12) {
+            // Hard reset target if we spent too long on it to avoid tree-to-tree jitter loops.
+            targetLog = null;
+            targetAgeTicks = 0;
+            targetMissingTicks = 0;
+            retargetCooldown = 20;
             return;
         }
 
@@ -84,12 +115,7 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
         if (distanceSq > MINE_RANGE_SQ) {
-            context.actions().setForward(true);
-            context.actions().setSprint(true);
-
-            if (context.player().isOnGround() && ticks % 12 == 0) {
-                context.actions().setJump(true);
-            }
+            moveToward(context, targetCenter, 12);
             return;
         }
 
@@ -101,11 +127,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         BlockPos mineTarget = resolveMineTarget(context, targetLog);
         if (mineTarget == null) {
             // Path around obstacles by continuing to move and occasionally hop.
-            context.actions().setForward(true);
-            context.actions().setSprint(true);
-            if (context.player().isOnGround() && ticks % 14 == 0) {
-                context.actions().setJump(true);
-            }
+            moveToward(context, targetCenter, 14);
             return;
         }
 
@@ -121,6 +143,8 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (!isLog(context, targetLog)) {
             targetLog = null;
             retargetCooldown = 0;
+            targetAgeTicks = 0;
+            targetMissingTicks = 0;
         }
     }
 
@@ -141,6 +165,8 @@ public final class AutoMineNearestLogTask implements BotTask {
         completed = false;
         retargetCooldown = 0;
         startingLogItemCount = 0;
+        targetAgeTicks = 0;
+        targetMissingTicks = 0;
     }
 
     private static BlockPos findNearestLog(BotContext context) {
@@ -161,9 +187,16 @@ public final class AutoMineNearestLogTask implements BotTask {
                         continue;
                     }
 
+                    // Prefer trunk-level logs over canopy logs to reduce erratic retargeting.
                     double distSq = pos.getSquaredDistance(origin);
-                    if (distSq < bestDistSq) {
-                        bestDistSq = distSq;
+                    double verticalPenalty = Math.abs(pos.getY() - origin.getY()) * 2.5;
+                    if (pos.getY() > origin.getY() + 2) {
+                        verticalPenalty += 8.0;
+                    }
+
+                    double score = distSq + verticalPenalty;
+                    if (score < bestDistSq) {
+                        bestDistSq = score;
                         best = pos.toImmutable();
                     }
                 }
@@ -225,6 +258,27 @@ public final class AutoMineNearestLogTask implements BotTask {
             }
         }
         return total;
+    }
+
+    private static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
+        ClientPlayerEntity player = context.player();
+        context.actions().setForward(true);
+        context.actions().setSprint(true);
+
+        // Add simple steering so the bot can path around trunks/leaves without hard retarget hops.
+        double dx = target.x - player.getX();
+        double dz = target.z - player.getZ();
+        float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
+        if (yawDelta > 20.0F) {
+            context.actions().setRight(true);
+        } else if (yawDelta < -20.0F) {
+            context.actions().setLeft(true);
+        }
+
+        if (player.isOnGround() && jumpPeriodTicks > 0 && player.age % jumpPeriodTicks == 0) {
+            context.actions().setJump(true);
+        }
     }
 
     private static void lookAt(ClientPlayerEntity player, Vec3d target) {
