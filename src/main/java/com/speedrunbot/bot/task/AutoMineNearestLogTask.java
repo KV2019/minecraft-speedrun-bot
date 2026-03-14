@@ -269,6 +269,14 @@ public final class AutoMineNearestLogTask implements BotTask {
         obstructedTicks = 0;
 
         if (!hasDirectLineOfSight(context, mineTarget)) {
+            BlockPos obstruction = detectObstacleBlock(context, targetLog);
+            if (isClearableObstacle(context, obstruction)) {
+                obstacleBlock = obstruction.toImmutable();
+                obstacleClearTicks = 0;
+                transition(context, MinerState.CLEAR_OBSTACLE, "no_los_clearable=" + obstacleBlock.toShortString());
+                return;
+            }
+
             noSightTicks++;
             moveToward(context, targetCenter, 14);
             if (noSightTicks > MAX_NO_SIGHT_TICKS) {
@@ -608,7 +616,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         BlockHitResult hit = context.world().raycast(new RaycastContext(
             from,
             to,
-            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.ShapeType.OUTLINE,
             RaycastContext.FluidHandling.NONE,
             context.player()
         ));
@@ -627,7 +635,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         BlockState hitState = context.world().getBlockState(hitPos);
-        if (hitState.isIn(BlockTags.LEAVES)) {
+        if (isClearableObstacleState(context, hitPos, hitState)) {
             return hitPos.toImmutable();
         }
 
@@ -645,7 +653,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         BlockHitResult hit = context.world().raycast(new RaycastContext(
             from,
             to,
-            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.ShapeType.OUTLINE,
             RaycastContext.FluidHandling.NONE,
             context.player()
         ));
@@ -668,7 +676,21 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         BlockState state = context.world().getBlockState(pos);
-        return state.isIn(BlockTags.LEAVES);
+        return isClearableObstacleState(context, pos, state);
+    }
+
+    private static boolean isClearableObstacleState(BotContext context, BlockPos pos, BlockState state) {
+        if (state.isAir() || !state.getFluidState().isEmpty()) {
+            return false;
+        }
+
+        // We only clear obstacles that are breakable by hand (no required tool).
+        if (state.isToolRequired()) {
+            return false;
+        }
+
+        // Ignore unbreakable blocks (e.g., bedrock).
+        return state.getHardness(context.world(), pos) >= 0.0F;
     }
 
     private static boolean hasDirectLineOfSight(BotContext context, BlockPos target) {
@@ -678,7 +700,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         BlockHitResult hit = context.world().raycast(new RaycastContext(
             from,
             to,
-            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.ShapeType.OUTLINE,
             RaycastContext.FluidHandling.NONE,
             context.player()
         ));
@@ -706,7 +728,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         BlockHitResult hit = context.world().raycast(new RaycastContext(
             from,
             to,
-            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.ShapeType.OUTLINE,
             RaycastContext.FluidHandling.NONE,
             context.player()
         ));
