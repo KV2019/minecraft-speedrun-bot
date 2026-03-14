@@ -6,63 +6,67 @@ This project is a Fabric client mod scaffold for building a Minecraft Java speed
 
 - A Fabric Gradle setup targeting Minecraft 1.21.11.
 - A client entrypoint with two keybinds.
-- A per-tick bot controller.
+- A per-tick bot controller with a single active task.
 - A small task interface so we can add navigation, combat, crafting, and routing logic without turning the codebase into one class.
-- A reusable player action controller for forward, strafe, jump, sprint, sneak, attack, and use inputs.
-- Four starter tasks:
-  - `AutoMineNearestLogTask` searches nearby logs, moves into range, and attempts to mine one.
-  - `MoveForwardTask` holds forward and sprint, performs periodic jumps, and slightly steers the camera.
-  - `LookAroundTask` rotates the camera to prove the control loop works.
-  - `StatusOverlayTask` shows live player state in the action bar.
+- A reusable `PlayerActionController` for forward, strafe, jump, sprint, sneak, attack, and use inputs.
+- An A\* `Navigator` that finds walkable paths around obstacles and detects when the player is stuck.
+- One production task:
+  - `AutoMineNearestLogTask` – finds the nearest accessible log, navigates to it using A\* pathfinding, clears any obstructing leaves, and mines the log. Repeats until no more logs are nearby, then finishes.
+- Three utility/test tasks kept for development:
+  - `MoveForwardTask` – holds forward and sprint, performs periodic jumps, and slightly steers the camera.
+  - `LookAroundTask` – rotates the camera to confirm the control loop works.
+  - `StatusOverlayTask` – shows live player state (XYZ, HP, food) in the action bar.
 
 ## Controls
 
 - `B`: toggle the bot on or off.
-- `N`: switch to the next task.
+- `N`: restart the current task from scratch.
 
-The tasks cycle in this order:
+## Active task
 
-1. `Move Forward`
-2. `Look Around`
-3. `Status Overlay`
+The bot currently runs only `AutoMineNearestLogTask`. Pressing `N` restarts it so you can immediately test a fresh run without toggling the bot off and on.
 
-Current internal cycle order in code:
+## How the navigator works
 
-1. `Mine Nearest Log`
-2. `Move Forward`
-3. `Look Around`
-4. `Status Overlay`
+`Navigator` runs an A\* search each time a new path is needed (at most every 10 ticks).
+It only considers positions where the player can stand (two clear blocks above a solid floor),
+treats leaf blocks as passable, and falls back to direct movement when no path is found.
+A stuck-detection timer resets the path if the player stops making progress for 35 ticks.
 
 ## Checking It In Client
 
 You need a Java 21 JDK and a way to run Gradle.
 
 1. Install Java 21.
-2. Install Gradle, or generate a Gradle wrapper from a machine that already has Gradle.
-3. In the project root, run `gradle runClient`.
-4. When the dev client opens, create or enter a world.
-5. Press `B` to toggle the bot.
-6. Press `N` to switch between tasks.
+2. In the project root, run `./gradlew runClient` (Linux/macOS) or `gradlew.bat runClient` (Windows).
+3. When the dev client opens, create or enter a world near some trees.
+4. Press `B` to start the bot.
+5. Watch the bot locate a log, navigate to it, and mine it.
 
 What you should see:
 
-- On `Mine Nearest Log`, the bot should pick a nearby tree log, walk toward it, and mine when in reach.
-- On `Move Forward`, the player should walk forward, sprint, and jump every second.
-- On `Look Around`, the player should rotate their view.
-- On `Status Overlay`, the action bar should show position, health, and food.
+- The action bar prints target coordinates when a log is acquired and when it is mined.
+- The bot walks around obstacles rather than walking straight into them.
+- After all nearby logs are collected the task finishes and the action bar shows "Task complete".
 
-If you want to test outside the Gradle dev client later, build the mod jar and place it in your Fabric `mods` folder.
+Press `N` to restart the task at any point.
+
+If you want to test outside the Gradle dev client, build the mod jar and drop it in your Fabric `mods` folder.
 
 ## Next milestones
 
-1. Add a world-query layer for blocks, structures, and nearby entities.
-2. Add a planner that can sequence objectives like wood, stone, iron, lava pool, fortress, and stronghold.
-3. Add block targeting, mining, and interact logic on top of the action controller.
+1. Add a multi-objective planner that sequences wood → crafting table → tools → stone → iron → lava pool → fortress → stronghold.
+2. Add crafting and smelting task logic on top of the action controller.
+3. Add combat and mob-avoidance logic.
 4. Add logging and replay-friendly run metrics.
 
 ## Build
 
-Use a Java 21 JDK. If Gradle is installed, you can generate a wrapper with `gradle wrapper`, then build with `gradlew build`.
+Use a Java 21 JDK.
+
+```
+./gradlew build
+```
 
 ## One Command Client Restart
 
@@ -70,10 +74,12 @@ To kill the previous workspace dev client and start a fresh one:
 
 PowerShell:
 
-.
-\scripts\run-client.ps1
+```
+.\scripts\run-client.ps1
+```
 
 If you want to skip the build step and relaunch faster:
 
-.
-\scripts\run-client.ps1 -SkipBuild
+```
+.\scripts\run-client.ps1 -SkipBuild
+```
