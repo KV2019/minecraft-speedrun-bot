@@ -2,9 +2,10 @@ package com.speedrunbot.bot;
 
 import com.speedrunbot.bot.task.BotTask;
 import com.speedrunbot.bot.task.AutoMineNearestLogTask;
-import com.speedrunbot.bot.task.LookAroundTask;
-import com.speedrunbot.bot.task.MoveForwardTask;
-import com.speedrunbot.bot.task.StatusOverlayTask;
+import com.speedrunbot.bot.task.CraftBasicWoodTask;
+import com.speedrunbot.bot.task.CraftWoodenPickaxeTask;
+import com.speedrunbot.bot.task.MineDownToStoneTask;
+import com.speedrunbot.bot.task.CraftStoneToolsTask;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
@@ -13,9 +14,10 @@ public final class BotController {
     private final PlayerActionController actionController = new PlayerActionController();
     private final List<BotTask> tasks = List.of(
         new AutoMineNearestLogTask(),
-        new MoveForwardTask(),
-        new LookAroundTask(),
-        new StatusOverlayTask()
+        new CraftBasicWoodTask(),
+        new CraftWoodenPickaxeTask(),
+        new MineDownToStoneTask(),
+        new CraftStoneToolsTask()
     );
 
     private boolean running;

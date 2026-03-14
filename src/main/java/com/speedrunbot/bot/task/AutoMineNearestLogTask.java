@@ -1,6 +1,9 @@
 package com.speedrunbot.bot.task;
 
 import com.speedrunbot.bot.BotContext;
+import java.util.ArrayDeque;
+import java.util.HashSet;
+import java.util.Set;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
@@ -19,22 +22,57 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class AutoMineNearestLogTask implements BotTask {
+    private enum MinerState {
+        ACQUIRE_TREE,
+        APPROACH_TARGET,
+        MINE_TARGET,
+        CLEAR_OBSTACLE,
+        RECOVER,
+        DONE
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(AutoMineNearestLogTask.class);
-    private static final boolean DEBUG_TELEMETRY = true;
-    private static final int DEBUG_PRINT_INTERVAL_TICKS = 10;
+    private static final boolean DEBUG_TELEMETRY = false;
+    private static final int DEBUG_PRINT_INTERVAL_TICKS = 20;
+    private static final boolean DEBUG_TO_ACTIONBAR = false;
 
-    private static final int SEARCH_RADIUS_XZ = 8;
-    private static final int SEARCH_RADIUS_Y = 4;
+    private static final int SEARCH_RADIUS_XZ = 10;
+    private static final int SEARCH_RADIUS_Y = 8;
     private static final double MINE_RANGE_SQ = 4.5 * 4.5;
-    private static final int MAX_TICKS = 20 * 35;
+    private static final int MAX_TICKS = 20 * 180;
+    private static final int SERVER_CONFIRM_TICKS = 30;
+    private static final int POST_BREAK_RETARGET_COOLDOWN = 12;
+    private static final int SAME_TARGET_STUCK_TICKS = 80;
+    private static final int MAX_NO_SIGHT_TICKS = 30;
+    private static final int MAX_OBSTRUCTED_TICKS = 30;
+    private static final int MAX_OBSTACLE_CLEAR_TICKS = 40;
+    private static final int CLEAR_AREA_FINISH_TICKS = 80;
+    private static final int MAX_CLUSTER_SIZE = 192;
+    private static final int TARGET_AVOID_TICKS = 100;
 
+    private MinerState state;
     private BlockPos targetLog;
+    private final Set<BlockPos> currentCluster = new HashSet<>();
     private int ticks;
+    private int stateTicks;
     private boolean completed;
     private int retargetCooldown;
     private int startingLogItemCount;
-    private int targetAgeTicks;
+    private int collectedLogs;
+    private int noLogTicks;
     private int targetMissingTicks;
+    private int sameTargetTicks;
+    private int noSightTicks;
+    private int obstructedTicks;
+    private boolean awaitingServerConfirm;
+    private int serverConfirmTicks;
+    private BlockPos recentlyBrokenLog;
+    private Vec3d lastProgressPos;
+    private int noMoveTicks;
+    private BlockPos obstacleBlock;
+    private int obstacleClearTicks;
+    private BlockPos avoidTarget;
+    private int avoidTargetUntilTick;
 
     @Override
     public String name() {
@@ -43,13 +81,29 @@ public final class AutoMineNearestLogTask implements BotTask {
 
     @Override
     public void start(BotContext context) {
+        state = MinerState.ACQUIRE_TREE;
         targetLog = null;
+        currentCluster.clear();
         ticks = 0;
+        stateTicks = 0;
         completed = false;
         retargetCooldown = 0;
         startingLogItemCount = countLogItems(context.player());
-        targetAgeTicks = 0;
+        collectedLogs = 0;
+        noLogTicks = 0;
         targetMissingTicks = 0;
+        sameTargetTicks = 0;
+        noSightTicks = 0;
+        obstructedTicks = 0;
+        awaitingServerConfirm = false;
+        serverConfirmTicks = 0;
+        recentlyBrokenLog = null;
+        lastProgressPos = null;
+        noMoveTicks = 0;
+        obstacleBlock = null;
+        obstacleClearTicks = 0;
+        avoidTarget = null;
+        avoidTargetUntilTick = 0;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
         debug(context, "start logs=" + startingLogItemCount);
     }
@@ -57,81 +111,129 @@ public final class AutoMineNearestLogTask implements BotTask {
     @Override
     public void tick(BotContext context) {
         ticks++;
+        stateTicks++;
 
-        if (countLogItems(context.player()) > startingLogItemCount) {
-            completed = true;
+        int nowLogs = countLogItems(context.player());
+        if (nowLogs > startingLogItemCount + collectedLogs) {
+            int gained = nowLogs - (startingLogItemCount + collectedLogs);
+            collectedLogs += gained;
+            noLogTicks = 0;
             context.player().sendMessage(Text.literal("[SpeedrunBot] Collected log item"), true);
-            debug(context, "finish reason=collected_log");
-            return;
+            debug(context, "collect gained=" + gained + " total=" + collectedLogs);
+        }
+
+        if (awaitingServerConfirm) {
+            if (recentlyBrokenLog != null && isLog(context, recentlyBrokenLog)) {
+                awaitingServerConfirm = false;
+                targetLog = recentlyBrokenLog.toImmutable();
+                recentlyBrokenLog = null;
+                serverConfirmTicks = 0;
+                transition(context, MinerState.MINE_TARGET, "confirm rollback_to_log");
+            } else {
+                serverConfirmTicks--;
+                if (serverConfirmTicks <= 0) {
+                    awaitingServerConfirm = false;
+                    recentlyBrokenLog = null;
+                    targetLog = null;
+                    retargetCooldown = POST_BREAK_RETARGET_COOLDOWN;
+                    noSightTicks = 0;
+                    obstructedTicks = 0;
+                    transition(context, MinerState.ACQUIRE_TREE, "confirm timeout_reacquire");
+                }
+                return;
+            }
         }
 
         if (retargetCooldown > 0) {
             retargetCooldown--;
         }
 
-        if (targetLog != null && isLog(context, targetLog)) {
-            targetMissingTicks = 0;
-        } else if (targetLog != null) {
-            // Keep the target for a short time to allow server corrections/drop pickup.
-            targetMissingTicks++;
-            if (targetMissingTicks < 20) {
-                moveToward(context, Vec3d.ofCenter(targetLog), 14);
-                debug(context, "target_missing grace=" + targetMissingTicks + " target=" + targetLog.toShortString());
-                return;
-            }
-
-            targetLog = null;
-            targetMissingTicks = 0;
-            targetAgeTicks = 0;
-            retargetCooldown = 10;
-            debug(context, "drop_target reason=missing_too_long");
+        switch (state) {
+            case ACQUIRE_TREE -> tickAcquireTree(context);
+            case APPROACH_TARGET -> tickApproachTarget(context);
+            case MINE_TARGET -> tickMineTarget(context);
+            case CLEAR_OBSTACLE -> tickClearObstacle(context);
+            case RECOVER -> tickRecover(context);
+            case DONE -> completed = true;
         }
+    }
 
-        if (targetLog == null && retargetCooldown == 0) {
-            targetLog = findNearestLog(context);
-            retargetCooldown = 20;
-            targetAgeTicks = 0;
-
-            if (targetLog != null) {
-                context.player().sendMessage(
-                    Text.literal("[SpeedrunBot] Target log at " + targetLog.toShortString()),
-                    true
-                );
-                debug(context, "acquire_target pos=" + targetLog.toShortString());
-            } else {
-                debug(context, "acquire_target none");
-            }
-        }
-
-        if (targetLog == null) {
-            // Gentle roam so the bot can discover trees without standing still forever.
-            moveToward(
-                context,
-                context.player().getRotationVec(1.0F).add(context.player().getX(), context.player().getY(), context.player().getZ()),
-                24
-            );
-            debug(context, "roam no_target cooldown=" + retargetCooldown);
+    private void tickAcquireTree(BotContext context) {
+        if (retargetCooldown > 0) {
             return;
         }
 
-        targetAgeTicks++;
-        if (targetAgeTicks > 20 * 12) {
-            // Hard reset target if we spent too long on it to avoid tree-to-tree jitter loops.
+        pruneCluster(context);
+        if (currentCluster.isEmpty()) {
+            BlockPos seed = findNearestLog(context);
+            if (seed == null) {
+                noLogTicks++;
+                if (collectedLogs > 0 && noLogTicks >= CLEAR_AREA_FINISH_TICKS) {
+                    transition(context, MinerState.DONE, "area_cleared collected=" + collectedLogs);
+                    return;
+                }
+
+                moveToward(
+                    context,
+                    context.player().getRotationVec(1.0F).add(context.player().getX(), context.player().getY(), context.player().getZ()),
+                    24
+                );
+                debug(context, "acquire none noLogTicks=" + noLogTicks);
+                return;
+            }
+
+            buildLogCluster(context, seed);
+            noLogTicks = 0;
+            debug(context, "cluster size=" + currentCluster.size() + " seed=" + seed.toShortString());
+        }
+
+        targetLog = pickClusterTarget(context);
+        if (targetLog == null) {
+            currentCluster.clear();
+            retargetCooldown = 8;
+            debug(context, "acquire cluster_no_target");
+            return;
+        }
+
+        targetMissingTicks = 0;
+        sameTargetTicks = 0;
+        noSightTicks = 0;
+        obstructedTicks = 0;
+        lastProgressPos = new Vec3d(context.player().getX(), context.player().getY(), context.player().getZ());
+        noMoveTicks = 0;
+        context.player().sendMessage(Text.literal("[SpeedrunBot] Target log at " + targetLog.toShortString()), true);
+        transition(context, MinerState.APPROACH_TARGET, "target=" + targetLog.toShortString());
+    }
+
+    private void tickApproachTarget(BotContext context) {
+        if (targetLog == null || !isLog(context, targetLog)) {
+            removeFromCluster(targetLog);
             targetLog = null;
-            targetAgeTicks = 0;
-            targetMissingTicks = 0;
-            retargetCooldown = 20;
-            debug(context, "drop_target reason=aged_out");
+            transition(context, MinerState.ACQUIRE_TREE, "target_missing_during_approach");
             return;
         }
 
         Vec3d targetCenter = Vec3d.ofCenter(targetLog);
         lookAt(context.player(), targetCenter);
-
         double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
         if (distanceSq > MINE_RANGE_SQ) {
             moveToward(context, targetCenter, 12);
-            debug(context, "move_to_target dist=" + String.format("%.2f", Math.sqrt(distanceSq)) + " target=" + targetLog.toShortString());
+            updateMovementProgress(context);
+            if (noMoveTicks > 30) {
+                transition(context, MinerState.RECOVER, "approach_no_progress");
+                return;
+            }
+            return;
+        }
+
+        transition(context, MinerState.MINE_TARGET, "in_range");
+    }
+
+    private void tickMineTarget(BotContext context) {
+        if (targetLog == null || !isLog(context, targetLog)) {
+            removeFromCluster(targetLog);
+            targetLog = null;
+            transition(context, MinerState.ACQUIRE_TREE, "target_missing_during_mine");
             return;
         }
 
@@ -140,13 +242,41 @@ public final class AutoMineNearestLogTask implements BotTask {
             return;
         }
 
-        BlockPos mineTarget = resolveMineTarget(context, targetLog);
-        if (mineTarget == null) {
-            // Path around obstacles by continuing to move and occasionally hop.
-            moveToward(context, targetCenter, 14);
-            debug(context, "mine_target none (obstructed) target=" + targetLog.toShortString());
+        Vec3d targetCenter = Vec3d.ofCenter(targetLog);
+        double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
+        if (distanceSq > MINE_RANGE_SQ) {
+            transition(context, MinerState.APPROACH_TARGET, "out_of_range");
             return;
         }
+
+        BlockPos mineTarget = resolveMineTarget(context, targetLog);
+        if (mineTarget == null) {
+            BlockPos obstruction = detectObstacleBlock(context, targetLog);
+            if (isClearableObstacle(context, obstruction)) {
+                obstacleBlock = obstruction.toImmutable();
+                obstacleClearTicks = 0;
+                transition(context, MinerState.CLEAR_OBSTACLE, "clearable_obstacle=" + obstacleBlock.toShortString());
+                return;
+            }
+
+            obstructedTicks++;
+            moveToward(context, targetCenter, 14);
+            if (obstructedTicks > MAX_OBSTRUCTED_TICKS) {
+                startRecoverWithAvoid(context, "obstructed_timeout", true);
+            }
+            return;
+        }
+        obstructedTicks = 0;
+
+        if (!hasDirectLineOfSight(context, mineTarget)) {
+            noSightTicks++;
+            moveToward(context, targetCenter, 14);
+            if (noSightTicks > MAX_NO_SIGHT_TICKS) {
+                startRecoverWithAvoid(context, "no_los_timeout", true);
+            }
+            return;
+        }
+        noSightTicks = 0;
 
         Vec3d mineCenter = Vec3d.ofCenter(mineTarget);
         lookAt(context.player(), mineCenter);
@@ -155,16 +285,121 @@ public final class AutoMineNearestLogTask implements BotTask {
         interaction.updateBlockBreakingProgress(mineTarget, hitSide);
         context.player().swingHand(Hand.MAIN_HAND);
         context.actions().setAttack(true);
-        debug(context, "mine block=" + mineTarget.toShortString() + " hitSide=" + hitSide);
 
-        // Do not complete on client-side prediction; keep going until we actually pick up a log.
-        if (!isLog(context, targetLog)) {
-            targetLog = null;
-            retargetCooldown = 0;
-            targetAgeTicks = 0;
-            targetMissingTicks = 0;
-            debug(context, "target_log_not_present waiting_for_pickup_or_new_target");
+        if (mineTarget.equals(targetLog)) {
+            sameTargetTicks++;
+            if (sameTargetTicks > SAME_TARGET_STUCK_TICKS) {
+                startRecoverWithAvoid(context, "same_target_stuck", false);
+                return;
+            }
+        } else {
+            sameTargetTicks = 0;
         }
+
+        if (!isLog(context, targetLog)) {
+            awaitingServerConfirm = true;
+            serverConfirmTicks = SERVER_CONFIRM_TICKS;
+            recentlyBrokenLog = targetLog.toImmutable();
+            removeFromCluster(targetLog);
+            targetLog = null;
+            retargetCooldown = POST_BREAK_RETARGET_COOLDOWN;
+            targetMissingTicks = 0;
+            sameTargetTicks = 0;
+            noSightTicks = 0;
+            obstructedTicks = 0;
+            transition(context, MinerState.ACQUIRE_TREE, "verify_break_start");
+        }
+    }
+
+    private void tickClearObstacle(BotContext context) {
+        if (obstacleBlock == null) {
+            startRecoverWithAvoid(context, "missing_obstacle_target", true);
+            return;
+        }
+
+        ClientPlayerInteractionManager interaction = context.client().interactionManager;
+        if (interaction == null) {
+            return;
+        }
+
+        if (!isClearableObstacle(context, obstacleBlock)) {
+            obstacleBlock = null;
+            obstacleClearTicks = 0;
+            transition(context, MinerState.MINE_TARGET, "obstacle_already_gone");
+            return;
+        }
+
+        obstacleClearTicks++;
+        Vec3d center = Vec3d.ofCenter(obstacleBlock);
+        lookAt(context.player(), center);
+
+        if (!hasDirectLineOfSight(context, obstacleBlock)) {
+            moveToward(context, center, 12);
+            if (obstacleClearTicks > MAX_OBSTACLE_CLEAR_TICKS) {
+                startRecoverWithAvoid(context, "obstacle_no_los_timeout", true);
+            }
+            return;
+        }
+
+        Direction hitSide = sideClosestToPlayer(context.player(), center);
+        interaction.attackBlock(obstacleBlock, hitSide);
+        interaction.updateBlockBreakingProgress(obstacleBlock, hitSide);
+        context.player().swingHand(Hand.MAIN_HAND);
+        context.actions().setAttack(true);
+
+        if (!isClearableObstacle(context, obstacleBlock)) {
+            obstacleBlock = null;
+            obstacleClearTicks = 0;
+            noSightTicks = 0;
+            obstructedTicks = 0;
+            transition(context, MinerState.MINE_TARGET, "obstacle_cleared");
+            return;
+        }
+
+        if (obstacleClearTicks > MAX_OBSTACLE_CLEAR_TICKS) {
+            startRecoverWithAvoid(context, "obstacle_clear_timeout", true);
+        }
+    }
+
+    private void tickRecover(BotContext context) {
+        ClientPlayerInteractionManager interaction = context.client().interactionManager;
+        if (interaction != null) {
+            interaction.cancelBlockBreaking();
+        }
+
+        // Simple recovery ladder: brief backoff + strafe, then reacquire target.
+        if (stateTicks <= 12) {
+            context.actions().setBack(true);
+            if ((ticks / 6) % 2 == 0) {
+                context.actions().setLeft(true);
+            } else {
+                context.actions().setRight(true);
+            }
+            if (context.player().isOnGround() && ticks % 6 == 0) {
+                context.actions().setJump(true);
+            }
+            return;
+        }
+
+        targetLog = null;
+        targetMissingTicks = 0;
+        sameTargetTicks = 0;
+        noSightTicks = 0;
+        obstructedTicks = 0;
+        noMoveTicks = 0;
+        obstacleBlock = null;
+        obstacleClearTicks = 0;
+        retargetCooldown = 8;
+        transition(context, MinerState.ACQUIRE_TREE, "recover_complete");
+    }
+
+    private void startRecoverWithAvoid(BotContext context, String reason, boolean avoidCurrentTarget) {
+        if (avoidCurrentTarget && targetLog != null) {
+            avoidTarget = targetLog.toImmutable();
+            avoidTargetUntilTick = ticks + TARGET_AVOID_TICKS;
+            debug(context, "avoid target=" + avoidTarget.toShortString() + " until=" + avoidTargetUntilTick + " reason=" + reason);
+        }
+        transition(context, MinerState.RECOVER, reason);
     }
 
     @Override
@@ -183,13 +418,136 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         targetLog = null;
+        currentCluster.clear();
+        state = MinerState.ACQUIRE_TREE;
         ticks = 0;
+        stateTicks = 0;
         completed = false;
         retargetCooldown = 0;
         startingLogItemCount = 0;
-        targetAgeTicks = 0;
+        collectedLogs = 0;
+        noLogTicks = 0;
         targetMissingTicks = 0;
+        sameTargetTicks = 0;
+        noSightTicks = 0;
+        obstructedTicks = 0;
+        awaitingServerConfirm = false;
+        serverConfirmTicks = 0;
+        recentlyBrokenLog = null;
+        lastProgressPos = null;
+        noMoveTicks = 0;
+        obstacleBlock = null;
+        obstacleClearTicks = 0;
+        avoidTarget = null;
+        avoidTargetUntilTick = 0;
         debug(context, "stop");
+    }
+
+    private void transition(BotContext context, MinerState next, String reason) {
+        if (state != next) {
+            debug(context, "state " + state + " -> " + next + " reason=" + reason);
+        }
+        state = next;
+        stateTicks = 0;
+    }
+
+    private void updateMovementProgress(BotContext context) {
+        Vec3d current = new Vec3d(context.player().getX(), context.player().getY(), context.player().getZ());
+        if (lastProgressPos != null && current.squaredDistanceTo(lastProgressPos) < 0.03 * 0.03) {
+            noMoveTicks++;
+        } else {
+            noMoveTicks = 0;
+        }
+        lastProgressPos = current;
+    }
+
+    private void pruneCluster(BotContext context) {
+        currentCluster.removeIf(pos -> !isLog(context, pos));
+    }
+
+    private void removeFromCluster(BlockPos pos) {
+        if (pos != null) {
+            currentCluster.remove(pos);
+        }
+    }
+
+    private void buildLogCluster(BotContext context, BlockPos seed) {
+        currentCluster.clear();
+        if (seed == null || !isLog(context, seed)) {
+            return;
+        }
+
+        Set<BlockPos> visited = new HashSet<>();
+        ArrayDeque<BlockPos> queue = new ArrayDeque<>();
+        queue.add(seed.toImmutable());
+        visited.add(seed.toImmutable());
+
+        while (!queue.isEmpty() && currentCluster.size() < MAX_CLUSTER_SIZE) {
+            BlockPos cur = queue.poll();
+            if (!isLog(context, cur)) {
+                continue;
+            }
+
+            currentCluster.add(cur.toImmutable());
+            for (Direction dir : Direction.values()) {
+                BlockPos next = cur.offset(dir).toImmutable();
+                if (visited.add(next) && isLog(context, next)) {
+                    queue.add(next);
+                }
+            }
+        }
+    }
+
+    private BlockPos pickClusterTarget(BotContext context) {
+        BlockPos origin = context.player().getBlockPos();
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+
+        boolean avoidActive = avoidTarget != null && ticks < avoidTargetUntilTick;
+
+        for (BlockPos pos : currentCluster) {
+            if (!isLog(context, pos)) {
+                continue;
+            }
+
+            if (avoidActive && pos.equals(avoidTarget)) {
+                continue;
+            }
+
+            if (!hasExposedFace(context, pos)) {
+                continue;
+            }
+
+            double dist = pos.getSquaredDistance(origin);
+            double yPenalty = Math.abs(pos.getY() - origin.getY()) * 2.0;
+            double score = dist + yPenalty;
+            if (score < bestScore) {
+                bestScore = score;
+                best = pos.toImmutable();
+            }
+        }
+
+        if (best != null) {
+            return best;
+        }
+
+        // If all exposed-face filters fail, still allow any remaining log in the cluster.
+        for (BlockPos pos : currentCluster) {
+            if (isLog(context, pos)) {
+                if (avoidActive && pos.equals(avoidTarget)) {
+                    continue;
+                }
+                return pos.toImmutable();
+            }
+        }
+
+        // If everything was filtered by temporary avoid, allow retry after timeout.
+        if (avoidActive && ticks + 1 >= avoidTargetUntilTick) {
+            avoidTarget = null;
+            avoidTargetUntilTick = 0;
+        }
+
+        return null;
     }
 
     private static BlockPos findNearestLog(BotContext context) {
@@ -264,12 +622,96 @@ public final class AutoMineNearestLogTask implements BotTask {
             return intendedLog;
         }
 
+        if (canRayHitLog(context, from, intendedLog)) {
+            return intendedLog;
+        }
+
         BlockState hitState = context.world().getBlockState(hitPos);
         if (hitState.isIn(BlockTags.LEAVES)) {
             return hitPos.toImmutable();
         }
 
         return null;
+    }
+
+    private static BlockPos detectObstacleBlock(BotContext context, BlockPos target) {
+        if (target == null) {
+            return null;
+        }
+
+        Vec3d from = context.player().getEyePos();
+        Vec3d to = Vec3d.ofCenter(target);
+
+        BlockHitResult hit = context.world().raycast(new RaycastContext(
+            from,
+            to,
+            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE,
+            context.player()
+        ));
+
+        if (hit.getType() != HitResult.Type.BLOCK) {
+            return null;
+        }
+
+        BlockPos hitPos = hit.getBlockPos();
+        if (hitPos.equals(target)) {
+            return null;
+        }
+
+        return hitPos.toImmutable();
+    }
+
+    private static boolean isClearableObstacle(BotContext context, BlockPos pos) {
+        if (pos == null) {
+            return false;
+        }
+
+        BlockState state = context.world().getBlockState(pos);
+        return state.isIn(BlockTags.LEAVES);
+    }
+
+    private static boolean hasDirectLineOfSight(BotContext context, BlockPos target) {
+        Vec3d from = context.player().getEyePos();
+        Vec3d to = Vec3d.ofCenter(target);
+
+        BlockHitResult hit = context.world().raycast(new RaycastContext(
+            from,
+            to,
+            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE,
+            context.player()
+        ));
+
+        return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target);
+    }
+
+    private static boolean canRayHitLog(BotContext context, Vec3d from, BlockPos target) {
+        Vec3d center = Vec3d.ofCenter(target);
+        if (rayHits(context, from, center, target)) {
+            return true;
+        }
+
+        for (Direction dir : Direction.values()) {
+            Vec3d offset = new Vec3d(dir.getOffsetX(), dir.getOffsetY(), dir.getOffsetZ()).multiply(0.42);
+            if (rayHits(context, from, center.add(offset), target)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean rayHits(BotContext context, Vec3d from, Vec3d to, BlockPos expectedTarget) {
+        BlockHitResult hit = context.world().raycast(new RaycastContext(
+            from,
+            to,
+            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE,
+            context.player()
+        ));
+
+        return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(expectedTarget);
     }
 
     private static int countLogItems(ClientPlayerEntity player) {
@@ -293,13 +735,17 @@ public final class AutoMineNearestLogTask implements BotTask {
         double dz = target.z - player.getZ();
         float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
-        if (yawDelta > 20.0F) {
+        player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -3.0F, 3.0F));
+        player.setPitch(MathHelper.clamp(player.getPitch(), -25.0F, 25.0F));
+
+        if (yawDelta > 35.0F) {
             context.actions().setRight(true);
-        } else if (yawDelta < -20.0F) {
+        } else if (yawDelta < -35.0F) {
             context.actions().setLeft(true);
         }
 
-        if (player.isOnGround() && jumpPeriodTicks > 0 && player.age % jumpPeriodTicks == 0) {
+        double horizontalDistSq = dx * dx + dz * dz;
+        if (player.isOnGround() && jumpPeriodTicks > 0 && horizontalDistSq > 1.2 * 1.2 && player.age % jumpPeriodTicks == 0) {
             context.actions().setJump(true);
         }
     }
@@ -322,13 +768,15 @@ public final class AutoMineNearestLogTask implements BotTask {
         int logs = countLogItems(context.player());
         String line = "[SBOT] " + message +
             " | t=" + ticks +
+            " s=" + state +
             " target=" + target +
-            " age=" + targetAgeTicks +
             " miss=" + targetMissingTicks +
             " logs=" + logs;
 
         LOGGER.info(line);
-        context.player().sendMessage(Text.literal(line), true);
+        if (DEBUG_TO_ACTIONBAR) {
+            context.player().sendMessage(Text.literal(line), true);
+        }
     }
 
     private static void lookAt(ClientPlayerEntity player, Vec3d target) {
@@ -337,11 +785,14 @@ public final class AutoMineNearestLogTask implements BotTask {
         double dz = target.z - player.getZ();
         double horizontal = Math.sqrt(dx * dx + dz * dz);
 
-        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        float pitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
+        float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float desiredPitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
 
-        player.setYaw(yaw);
-        player.setPitch(MathHelper.clamp(pitch, -89.0F, 89.0F));
+        float yawStep = MathHelper.clamp(MathHelper.wrapDegrees(desiredYaw - player.getYaw()), -8.0F, 8.0F);
+        float pitchStep = MathHelper.clamp(desiredPitch - player.getPitch(), -6.0F, 6.0F);
+
+        player.setYaw(player.getYaw() + yawStep);
+        player.setPitch(MathHelper.clamp(player.getPitch() + pitchStep, -55.0F, 55.0F));
     }
 
     private static Direction sideClosestToPlayer(ClientPlayerEntity player, Vec3d blockCenter) {
