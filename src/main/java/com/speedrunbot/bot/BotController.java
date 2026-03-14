@@ -22,26 +22,35 @@ public final class BotController {
 
     private boolean running;
     private boolean taskStarted;
+    private boolean manualTaskSelection;
     private int activeTaskIndex;
+    private int taskRunTicks;
+
+    private static final int MIN_TASK_TICKS = 20;
 
     public void toggle(MinecraftClient client) {
         running = !running;
 
         if (!running) {
             stopActiveTask(client);
+            manualTaskSelection = false;
             sendStatus(client, "Bot stopped");
             return;
         }
 
         taskStarted = false;
+        taskRunTicks = 0;
         sendStatus(client, "Bot enabled: " + activeTask().name());
     }
 
     public void advanceTask(MinecraftClient client) {
         stopActiveTask(client);
+        running = false;
+        manualTaskSelection = true;
         activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
         taskStarted = false;
-        sendStatus(client, "Selected task: " + activeTask().name());
+        taskRunTicks = 0;
+        sendStatus(client, "Selected task: " + activeTask().name() + " (press toggle to start)");
     }
 
     public void onEndTick(MinecraftClient client) {
@@ -61,16 +70,26 @@ public final class BotController {
         if (!taskStarted) {
             activeTask().start(context);
             taskStarted = true;
+            taskRunTicks = 0;
         }
 
         activeTask().tick(context);
         actionController.apply(client);
+        taskRunTicks++;
 
-        if (activeTask().isFinished(context)) {
+        if (taskRunTicks >= MIN_TASK_TICKS && activeTask().isFinished(context)) {
             activeTask().stop(context);
             actionController.releaseAll(client);
-            activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
             taskStarted = false;
+            taskRunTicks = 0;
+
+            if (manualTaskSelection) {
+                running = false;
+                sendStatus(client, "Task finished: " + activeTask().name());
+                return;
+            }
+
+            activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
             sendStatus(client, "Advanced to task: " + activeTask().name());
         }
     }

@@ -32,7 +32,7 @@ public final class MineDownToStoneTask implements BotTask {
     }
 
     private static final int COBBLESTONE_TARGET = 16;
-    private static final int INITIAL_STONE_TARGET = 2;
+    private static final int INITIAL_STONE_TARGET = 4;
     private static final int MAX_DIG_DEPTH = 20;
     private static final int SURFACE_MARGIN = 1;
     private static final Item[] TOWER_BLOCKS = {
@@ -118,19 +118,6 @@ public final class MineDownToStoneTask implements BotTask {
 
     private void tickDigToStone(BotContext context) {
         ClientPlayerEntity player = context.player();
-        if (gainedCobblestone(player) >= INITIAL_STONE_TARGET) {
-            Direction chosen = pickStoneTunnelDirection(context, player.getBlockPos());
-            if (chosen == null) {
-                player.sendMessage(Text.literal("[SpeedrunBot] No stone tunnel direction, returning"), true);
-                transition(State.EQUIP_TOWER_BLOCK);
-                return;
-            }
-            tunnelDirection = chosen;
-            player.sendMessage(Text.literal("[SpeedrunBot] Found stone, mining sideways"), true);
-            transition(State.MINE_TUNNEL);
-            return;
-        }
-
         if (player.getBlockY() < startSurfaceY - MAX_DIG_DEPTH) {
             player.sendMessage(Text.literal("[SpeedrunBot] Reached dig depth limit"), true);
             transition(State.EQUIP_TOWER_BLOCK);
@@ -142,6 +129,18 @@ public final class MineDownToStoneTask implements BotTask {
             player.sendMessage(Text.literal("[SpeedrunBot] Hazard below, returning"), true);
             transition(State.EQUIP_TOWER_BLOCK);
             return;
+        }
+
+        // Only try to transition once we have enough cobblestone AND a valid stone corridor.
+        if (gainedCobblestone(player) >= INITIAL_STONE_TARGET) {
+            Direction chosen = pickStoneTunnelDirection(context, player.getBlockPos());
+            if (chosen != null) {
+                tunnelDirection = chosen;
+                player.sendMessage(Text.literal("[SpeedrunBot] Found stone, mining sideways"), true);
+                transition(State.MINE_TUNNEL);
+                return;
+            }
+            // No valid direction yet — keep digging deeper.
         }
 
         if (mineBlock(context, belowPos, Direction.UP, true)) {
@@ -158,53 +157,66 @@ public final class MineDownToStoneTask implements BotTask {
         }
 
         BlockPos basePos = player.getBlockPos();
-        if (!isStoneTunnelPair(context, basePos.offset(tunnelDirection), basePos.offset(tunnelDirection).up())) {
-            Direction next = pickStoneTunnelDirection(context, basePos);
-            if (next == null) {
-                player.sendMessage(Text.literal("[SpeedrunBot] Tunnel left stone layer, returning"), true);
-                transition(State.RETURN_TO_SHAFT);
-                return;
-            }
-            tunnelDirection = next;
-            return;
-        }
-
         BlockPos frontFeet = basePos.offset(tunnelDirection);
         BlockPos frontHead = frontFeet.up();
 
-        if (isHazardous(context, frontFeet) || isHazardous(context, frontHead)) {
-            player.sendMessage(Text.literal("[SpeedrunBot] Hazard in tunnel, returning"), true);
-            transition(State.RETURN_TO_SHAFT);
+        boolean frontFeetAir = context.world().getBlockState(frontFeet).isAir();
+        boolean frontHeadAir = context.world().getBlockState(frontHead).isAir();
+
+        // Both blocks cleared — advance forward.
+        if (frontFeetAir && frontHeadAir) {
+            moveToward(context, Vec3d.ofBottomCenter(frontFeet), 0);
             return;
         }
 
-        if (!context.world().getBlockState(frontHead).isAir()) {
+        // Only re-evaluate tunnel direction when BOTH blocks are still solid (not mid-mine).
+        // If we re-evaluate after mining the head (now air), isStoneTunnelPair would return
+        // false and abort prematurely.
+        if (!frontFeetAir && !frontHeadAir) {
+            if (!isStoneTunnelPair(context, frontFeet, frontHead)) {
+                Direction next = pickStoneTunnelDirection(context, basePos);
+                if (next == null) {
+                    player.sendMessage(Text.literal("[SpeedrunBot] Tunnel left stone layer, returning"), true);
+                    transition(State.RETURN_TO_SHAFT);
+                    return;
+                }
+                tunnelDirection = next;
+                return;
+            }
+            if (isHazardous(context, frontFeet) || isHazardous(context, frontHead)) {
+                player.sendMessage(Text.literal("[SpeedrunBot] Hazard in tunnel, returning"), true);
+                transition(State.RETURN_TO_SHAFT);
+                return;
+            }
+        }
+
+        // Mine head first, then feet.
+        if (!frontHeadAir) {
             if (mineBlock(context, frontHead, tunnelDirection.getOpposite(), false)) {
                 announceCobbleProgress(player);
             }
             return;
         }
-
-        if (!context.world().getBlockState(frontFeet).isAir()) {
+        if (!frontFeetAir) {
             if (mineBlock(context, frontFeet, tunnelDirection.getOpposite(), false)) {
                 announceCobbleProgress(player);
             }
-            return;
         }
-
-        moveToward(context, Vec3d.ofBottomCenter(frontFeet), 0);
     }
 
     private void tickReturnToShaft(BotContext context) {
-        Vec3d shaftCenter = Vec3d.ofBottomCenter(shaftTopPos);
-        double distanceSq = context.player().squaredDistanceTo(shaftCenter.x, shaftCenter.y, shaftCenter.z);
-        if (distanceSq <= 1.0) {
+        ClientPlayerEntity player = context.player();
+        // Return to shaft column's X,Z at current depth (not 3D distance to surface position).
+        double dx = shaftTopPos.getX() + 0.5 - player.getX();
+        double dz = shaftTopPos.getZ() + 0.5 - player.getZ();
+        if (dx * dx + dz * dz <= 0.5 * 0.5) {
             transition(State.EQUIP_TOWER_BLOCK);
             return;
         }
 
-        lookAt(context.player(), shaftCenter.add(0.0, 0.6, 0.0));
-        moveToward(context, shaftCenter, 0);
+        Vec3d target = new Vec3d(shaftTopPos.getX() + 0.5, player.getY(), shaftTopPos.getZ() + 0.5);
+        lookAt(player, target.add(0.0, 0.6, 0.0));
+        moveToward(context, target, 0);
     }
 
     private void tickEquipTowerBlock(BotContext context) {

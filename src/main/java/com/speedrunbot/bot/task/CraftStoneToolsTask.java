@@ -186,6 +186,9 @@ public final class CraftStoneToolsTask implements BotTask {
         if (tableInvIndex >= 0 && interaction != null && handler != null) {
             if (tableInvIndex >= 9) {
                 interaction.clickSlot(handler.syncId, tableInvIndex, 0, SlotActionType.SWAP, player);
+            } else if (tableInvIndex != 0) {
+                int screenSlot = 36 + tableInvIndex;
+                interaction.clickSlot(handler.syncId, screenSlot, 0, SlotActionType.SWAP, player);
             }
             selectHotbarSlot(player, 0);
         }
@@ -211,9 +214,11 @@ public final class CraftStoneToolsTask implements BotTask {
         if (stateTicks >= 3) {
             ClientPlayerInteractionManager interaction = context.client().interactionManager;
             if (interaction != null) {
-                Vec3d hitVec = Vec3d.of(tableTargetPos);
+                selectHotbarSlot(context.player(), 0);
+                Vec3d hitVec = Vec3d.ofCenter(supportBlockPos).add(0.0, 0.5, 0.0);
                 BlockHitResult hitResult = new BlockHitResult(hitVec, Direction.UP, supportBlockPos, false);
                 interaction.interactBlock(context.player(), Hand.MAIN_HAND, hitResult);
+                context.player().swingHand(Hand.MAIN_HAND);
                 actionCooldown = 4;
             }
         }
@@ -448,6 +453,7 @@ public final class CraftStoneToolsTask implements BotTask {
     }
 
     private static void selectHotbarSlot(ClientPlayerEntity player, int slot) {
+        player.getInventory().setSelectedSlot(slot);
         if (player.networkHandler != null) {
             player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
         }

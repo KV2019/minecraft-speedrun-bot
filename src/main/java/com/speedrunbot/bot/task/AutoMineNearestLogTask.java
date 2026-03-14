@@ -26,6 +26,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         ACQUIRE_TREE,
         APPROACH_TARGET,
         MINE_TARGET,
+        COLLECT_DROPS,
         CLEAR_OBSTACLE,
         RECOVER,
         DONE
@@ -40,7 +41,6 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int SEARCH_RADIUS_Y = 8;
     private static final double MINE_RANGE_SQ = 4.5 * 4.5;
     private static final int MAX_TICKS = 20 * 180;
-    private static final int SERVER_CONFIRM_TICKS = 30;
     private static final int POST_BREAK_RETARGET_COOLDOWN = 12;
     private static final int SAME_TARGET_STUCK_TICKS = 80;
     private static final int MAX_NO_SIGHT_TICKS = 30;
@@ -49,6 +49,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int CLEAR_AREA_FINISH_TICKS = 80;
     private static final int MAX_CLUSTER_SIZE = 192;
     private static final int TARGET_AVOID_TICKS = 100;
+    private static final int DROP_COLLECTION_TICKS = 24;
 
     private MinerState state;
     private BlockPos targetLog;
@@ -65,7 +66,6 @@ public final class AutoMineNearestLogTask implements BotTask {
     private int noSightTicks;
     private int obstructedTicks;
     private boolean awaitingServerConfirm;
-    private int serverConfirmTicks;
     private BlockPos recentlyBrokenLog;
     private Vec3d lastProgressPos;
     private int noMoveTicks;
@@ -73,6 +73,9 @@ public final class AutoMineNearestLogTask implements BotTask {
     private int obstacleClearTicks;
     private BlockPos avoidTarget;
     private int avoidTargetUntilTick;
+    private BlockPos dropCollectPos;
+    private int dropCollectTicks;
+    private int dropCollectStartLogCount;
 
     @Override
     public String name() {
@@ -96,7 +99,6 @@ public final class AutoMineNearestLogTask implements BotTask {
         noSightTicks = 0;
         obstructedTicks = 0;
         awaitingServerConfirm = false;
-        serverConfirmTicks = 0;
         recentlyBrokenLog = null;
         lastProgressPos = null;
         noMoveTicks = 0;
@@ -104,6 +106,9 @@ public final class AutoMineNearestLogTask implements BotTask {
         obstacleClearTicks = 0;
         avoidTarget = null;
         avoidTargetUntilTick = 0;
+        dropCollectPos = null;
+        dropCollectTicks = 0;
+        dropCollectStartLogCount = 0;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
         debug(context, "start logs=" + startingLogItemCount);
     }
@@ -127,19 +132,18 @@ public final class AutoMineNearestLogTask implements BotTask {
                 awaitingServerConfirm = false;
                 targetLog = recentlyBrokenLog.toImmutable();
                 recentlyBrokenLog = null;
-                serverConfirmTicks = 0;
                 transition(context, MinerState.MINE_TARGET, "confirm rollback_to_log");
             } else {
-                serverConfirmTicks--;
-                if (serverConfirmTicks <= 0) {
-                    awaitingServerConfirm = false;
-                    recentlyBrokenLog = null;
-                    targetLog = null;
-                    retargetCooldown = POST_BREAK_RETARGET_COOLDOWN;
-                    noSightTicks = 0;
-                    obstructedTicks = 0;
-                    transition(context, MinerState.ACQUIRE_TREE, "confirm timeout_reacquire");
-                }
+                awaitingServerConfirm = false;
+                targetLog = null;
+                retargetCooldown = 0;
+                noSightTicks = 0;
+                obstructedTicks = 0;
+                dropCollectPos = recentlyBrokenLog == null ? null : recentlyBrokenLog.toImmutable();
+                recentlyBrokenLog = null;
+                dropCollectTicks = DROP_COLLECTION_TICKS;
+                dropCollectStartLogCount = countLogItems(context.player());
+                transition(context, MinerState.COLLECT_DROPS, "break_confirmed_collect");
                 return;
             }
         }
@@ -152,10 +156,37 @@ public final class AutoMineNearestLogTask implements BotTask {
             case ACQUIRE_TREE -> tickAcquireTree(context);
             case APPROACH_TARGET -> tickApproachTarget(context);
             case MINE_TARGET -> tickMineTarget(context);
+            case COLLECT_DROPS -> tickCollectDrops(context);
             case CLEAR_OBSTACLE -> tickClearObstacle(context);
             case RECOVER -> tickRecover(context);
             case DONE -> completed = true;
         }
+    }
+
+    private void tickCollectDrops(BotContext context) {
+        if (dropCollectPos == null) {
+            transition(context, MinerState.ACQUIRE_TREE, "collect_no_pos");
+            return;
+        }
+
+        int nowLogs = countLogItems(context.player());
+        if (nowLogs > dropCollectStartLogCount) {
+            dropCollectPos = null;
+            dropCollectTicks = 0;
+            transition(context, MinerState.ACQUIRE_TREE, "collect_got_drop");
+            return;
+        }
+
+        if (dropCollectTicks <= 0) {
+            dropCollectPos = null;
+            transition(context, MinerState.ACQUIRE_TREE, "collect_timeout");
+            return;
+        }
+
+        dropCollectTicks--;
+        Vec3d targetCenter = Vec3d.ofCenter(dropCollectPos);
+        lookAt(context.player(), targetCenter);
+        moveToward(context, targetCenter, 8);
     }
 
     private void tickAcquireTree(BotContext context) {
@@ -311,7 +342,6 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         if (!isLog(context, targetLog)) {
             awaitingServerConfirm = true;
-            serverConfirmTicks = SERVER_CONFIRM_TICKS;
             recentlyBrokenLog = targetLog.toImmutable();
             removeFromCluster(targetLog);
             targetLog = null;
@@ -403,6 +433,8 @@ public final class AutoMineNearestLogTask implements BotTask {
         obstacleBlock = null;
         obstacleClearTicks = 0;
         retargetCooldown = 8;
+        dropCollectPos = null;
+        dropCollectTicks = 0;
         transition(context, MinerState.ACQUIRE_TREE, "recover_complete");
     }
 
@@ -445,7 +477,6 @@ public final class AutoMineNearestLogTask implements BotTask {
         noSightTicks = 0;
         obstructedTicks = 0;
         awaitingServerConfirm = false;
-        serverConfirmTicks = 0;
         recentlyBrokenLog = null;
         lastProgressPos = null;
         noMoveTicks = 0;
@@ -453,6 +484,9 @@ public final class AutoMineNearestLogTask implements BotTask {
         obstacleClearTicks = 0;
         avoidTarget = null;
         avoidTargetUntilTick = 0;
+        dropCollectPos = null;
+        dropCollectTicks = 0;
+        dropCollectStartLogCount = 0;
         debug(context, "stop");
     }
 
@@ -534,7 +568,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             double dist = pos.getSquaredDistance(origin);
             double yPenalty = Math.abs(pos.getY() - origin.getY()) * 3.5;
             if (pos.getY() > origin.getY() + 1) {
-                yPenalty += 18.0;
+                yPenalty += 25.0;
             }
             double score = dist + yPenalty;
             if (score < bestScore) {
@@ -588,7 +622,7 @@ public final class AutoMineNearestLogTask implements BotTask {
                     double distSq = pos.getSquaredDistance(origin);
                     double verticalPenalty = Math.abs(pos.getY() - origin.getY()) * 3.0;
                     if (pos.getY() > origin.getY() + 1) {
-                        verticalPenalty += 16.0;
+                        verticalPenalty += 24.0;
                     }
 
                     double score = distSq + verticalPenalty;
@@ -757,12 +791,19 @@ public final class AutoMineNearestLogTask implements BotTask {
 
     private static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
         ClientPlayerEntity player = context.player();
+        double dx = target.x - player.getX();
+        double dz = target.z - player.getZ();
+
+        // If the target is nearly directly overhead/underfoot, atan2 is undefined and
+        // would cause the bot to spin in circles. Stand still and let the caller mine.
+        if (dx * dx + dz * dz < 0.5 * 0.5) {
+            return;
+        }
+
         context.actions().setForward(true);
         context.actions().setSprint(true);
 
         // Add simple steering so the bot can path around trunks/leaves without hard retarget hops.
-        double dx = target.x - player.getX();
-        double dz = target.z - player.getZ();
         float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
         player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -3.0F, 3.0F));
@@ -830,7 +871,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         float pitchStep = MathHelper.clamp(desiredPitch - player.getPitch(), -6.0F, 6.0F);
 
         player.setYaw(player.getYaw() + yawStep);
-        player.setPitch(MathHelper.clamp(player.getPitch() + pitchStep, -55.0F, 55.0F));
+        player.setPitch(MathHelper.clamp(player.getPitch() + pitchStep, -80.0F, 55.0F));
     }
 
     private static Direction sideClosestToPlayer(ClientPlayerEntity player, Vec3d blockCenter) {

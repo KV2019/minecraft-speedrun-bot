@@ -157,8 +157,11 @@ public final class CraftWoodenPickaxeTask implements BotTask {
                 // main inventory → swap to hotbar slot 0
                 int screenSlot = tableInvIndex;
                 interaction.clickSlot(handler.syncId, screenSlot, 0, SlotActionType.SWAP, player);
+            } else if (tableInvIndex != 0) {
+                // hotbar slot N -> swap into hotbar slot 0
+                int screenSlot = 36 + tableInvIndex;
+                interaction.clickSlot(handler.syncId, screenSlot, 0, SlotActionType.SWAP, player);
             }
-            // Select hotbar slot 0 via network packet
             selectHotbarSlot(player, 0);
         }
         actionCooldown = 3;
@@ -186,9 +189,11 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         if (stateTicks >= 3) {
             ClientPlayerInteractionManager interaction = context.client().interactionManager;
             if (interaction != null) {
-                Vec3d hitVec = Vec3d.of(tableTargetPos);
+                selectHotbarSlot(context.player(), 0);
+                Vec3d hitVec = Vec3d.ofCenter(supportBlockPos).add(0.0, 0.5, 0.0);
                 BlockHitResult hitResult = new BlockHitResult(hitVec, Direction.UP, supportBlockPos, false);
                 interaction.interactBlock(context.player(), Hand.MAIN_HAND, hitResult);
+                context.player().swingHand(Hand.MAIN_HAND);
                 actionCooldown = 4;
             }
         }
@@ -402,6 +407,7 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     }
 
     private static void selectHotbarSlot(ClientPlayerEntity player, int slot) {
+        player.getInventory().setSelectedSlot(slot);
         if (player.networkHandler != null) {
             player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
         }
