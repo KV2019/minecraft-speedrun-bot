@@ -22,6 +22,8 @@ public final class Navigator {
     private static final int PATH_MAX_NODES = 600;
     private static final int PATH_SEARCH_RADIUS = 14;
     private static final int PATH_STUCK_TICKS = 35;
+    private static final double VERTICAL_COST_MULTIPLIER = 1.5;
+    private static final double ELEVATION_CHANGE_COST = 0.35;
 
     private List<BlockPos> currentPath = List.of();
     private int pathIndex;
@@ -174,12 +176,12 @@ public final class Navigator {
         int dx = Math.abs(a.getX() - b.getX());
         int dy = Math.abs(a.getY() - b.getY());
         int dz = Math.abs(a.getZ() - b.getZ());
-        return dx + dz + (dy * 1.5);
+        return dx + dz + (dy * VERTICAL_COST_MULTIPLIER);
     }
 
     private static double movementCost(BlockPos a, BlockPos b) {
         int dy = Math.abs(a.getY() - b.getY());
-        return 1.0 + (dy > 0 ? 0.35 : 0.0);
+        return 1.0 + (dy > 0 ? ELEVATION_CHANGE_COST : 0.0);
     }
 
     private static List<BlockPos> neighbors(BotContext context, BlockPos origin, BlockPos current) {
@@ -209,7 +211,7 @@ public final class Navigator {
         return out;
     }
 
-    private static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
+    public static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
         ClientPlayerEntity player = context.player();
         context.actions().setForward(true);
         context.actions().setSprint(true);

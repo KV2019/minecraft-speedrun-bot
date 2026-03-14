@@ -34,6 +34,9 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int MAX_NO_SIGHT_TICKS = 36;
     private static final int MAX_OBSTRUCTED_TICKS = 36;
     private static final int CLEAR_AREA_FINISH_TICKS = 80;
+    private static final float LOOK_YAW_STEP_MAX = 8.0F;
+    private static final float LOOK_PITCH_STEP_MAX = 6.0F;
+    private static final float LOOK_PITCH_CLAMP = 55.0F;
 
     private BlockPos targetLog;
     private int ticks;
@@ -517,29 +520,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     }
 
     private static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
-        ClientPlayerEntity player = context.player();
-        context.actions().setForward(true);
-        context.actions().setSprint(true);
-
-        // Add simple steering so the bot can path around trunks/leaves without hard retarget hops.
-        double dx = target.x - player.getX();
-        double dz = target.z - player.getZ();
-        float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
-        player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -3.0F, 3.0F));
-
-        // Avoid camera lock looking straight down while navigating.
-        player.setPitch(MathHelper.clamp(player.getPitch(), -25.0F, 25.0F));
-
-        if (yawDelta > 35.0F) {
-            context.actions().setRight(true);
-        } else if (yawDelta < -35.0F) {
-            context.actions().setLeft(true);
-        }
-
-        if (player.isOnGround() && jumpPeriodTicks > 0 && player.age % jumpPeriodTicks == 0) {
-            context.actions().setJump(true);
-        }
+        Navigator.moveToward(context, target, jumpPeriodTicks);
     }
 
     private void debug(BotContext context, String message) {
@@ -580,11 +561,11 @@ public final class AutoMineNearestLogTask implements BotTask {
         float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float desiredPitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
 
-        float yawStep = MathHelper.clamp(MathHelper.wrapDegrees(desiredYaw - player.getYaw()), -8.0F, 8.0F);
-        float pitchStep = MathHelper.clamp(desiredPitch - player.getPitch(), -6.0F, 6.0F);
+        float yawStep = MathHelper.clamp(MathHelper.wrapDegrees(desiredYaw - player.getYaw()), -LOOK_YAW_STEP_MAX, LOOK_YAW_STEP_MAX);
+        float pitchStep = MathHelper.clamp(desiredPitch - player.getPitch(), -LOOK_PITCH_STEP_MAX, LOOK_PITCH_STEP_MAX);
 
         player.setYaw(player.getYaw() + yawStep);
-        player.setPitch(MathHelper.clamp(player.getPitch() + pitchStep, -55.0F, 55.0F));
+        player.setPitch(MathHelper.clamp(player.getPitch() + pitchStep, -LOOK_PITCH_CLAMP, LOOK_PITCH_CLAMP));
     }
 
     private static Direction sideClosestToPlayer(ClientPlayerEntity player, Vec3d blockCenter) {
