@@ -9,6 +9,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
@@ -118,7 +119,13 @@ public final class MineDownToStoneTask implements BotTask {
     private void tickDigToStone(BotContext context) {
         ClientPlayerEntity player = context.player();
         if (gainedCobblestone(player) >= INITIAL_STONE_TARGET) {
-            shaftTopPos = player.getBlockPos().toImmutable();
+            Direction chosen = pickStoneTunnelDirection(context, player.getBlockPos());
+            if (chosen == null) {
+                player.sendMessage(Text.literal("[SpeedrunBot] No stone tunnel direction, returning"), true);
+                transition(State.EQUIP_TOWER_BLOCK);
+                return;
+            }
+            tunnelDirection = chosen;
             player.sendMessage(Text.literal("[SpeedrunBot] Found stone, mining sideways"), true);
             transition(State.MINE_TUNNEL);
             return;
@@ -151,6 +158,17 @@ public final class MineDownToStoneTask implements BotTask {
         }
 
         BlockPos basePos = player.getBlockPos();
+        if (!isStoneTunnelPair(context, basePos.offset(tunnelDirection), basePos.offset(tunnelDirection).up())) {
+            Direction next = pickStoneTunnelDirection(context, basePos);
+            if (next == null) {
+                player.sendMessage(Text.literal("[SpeedrunBot] Tunnel left stone layer, returning"), true);
+                transition(State.RETURN_TO_SHAFT);
+                return;
+            }
+            tunnelDirection = next;
+            return;
+        }
+
         BlockPos frontFeet = basePos.offset(tunnelDirection);
         BlockPos frontHead = frontFeet.up();
 
@@ -215,7 +233,9 @@ public final class MineDownToStoneTask implements BotTask {
 
         BlockPos abovePos = player.getBlockPos().up(2);
         if (!context.world().getBlockState(abovePos).isAir()) {
-            mineBlock(context, abovePos, Direction.DOWN, false);
+            // Do not mine new blocks on return; this should be a clean shaft tower-up.
+            player.sendMessage(Text.literal("[SpeedrunBot] Shaft blocked above, stopping"), true);
+            transition(State.DONE);
             return;
         }
 
@@ -312,6 +332,42 @@ public final class MineDownToStoneTask implements BotTask {
     private static boolean isHazardous(BotContext context, BlockPos pos) {
         BlockState state = context.world().getBlockState(pos);
         return state.isOf(Blocks.LAVA) || state.isOf(Blocks.WATER) || state.isOf(Blocks.CAVE_AIR);
+    }
+
+    private static boolean isStoneLikeForTunnel(BlockState state) {
+        if (state.isAir() || !state.getFluidState().isEmpty()) {
+            return false;
+        }
+        return state.isIn(BlockTags.PICKAXE_MINEABLE);
+    }
+
+    private static boolean isStoneTunnelPair(BotContext context, BlockPos feetPos, BlockPos headPos) {
+        return isStoneLikeForTunnel(context.world().getBlockState(feetPos))
+            && isStoneLikeForTunnel(context.world().getBlockState(headPos));
+    }
+
+    private static Direction pickStoneTunnelDirection(BotContext context, BlockPos basePos) {
+        Direction best = null;
+        int bestScore = -1;
+
+        for (Direction dir : new Direction[]{Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST}) {
+            int score = 0;
+            for (int step = 1; step <= 5; step++) {
+                BlockPos feet = basePos.offset(dir, step);
+                BlockPos head = feet.up();
+                if (!isStoneTunnelPair(context, feet, head)) {
+                    break;
+                }
+                score++;
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                best = dir;
+            }
+        }
+
+        return bestScore > 0 ? best : null;
     }
 
     private static int countCobblestone(ClientPlayerEntity player) {
