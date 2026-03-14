@@ -173,10 +173,15 @@ public final class AutoMineNearestLogTask implements BotTask {
                     return;
                 }
 
+                // Controlled exploration while searching: move several blocks ahead and hop obstacles.
+                Vec3d exploreTarget = context.player()
+                    .getRotationVec(1.0F)
+                    .multiply(6.0)
+                    .add(context.player().getX(), context.player().getY(), context.player().getZ());
                 moveToward(
                     context,
-                    context.player().getRotationVec(1.0F).add(context.player().getX(), context.player().getY(), context.player().getZ()),
-                    24
+                    exploreTarget,
+                    8
                 );
                 debug(context, "acquire none noLogTicks=" + noLogTicks);
                 return;
@@ -527,7 +532,10 @@ public final class AutoMineNearestLogTask implements BotTask {
             }
 
             double dist = pos.getSquaredDistance(origin);
-            double yPenalty = Math.abs(pos.getY() - origin.getY()) * 2.0;
+            double yPenalty = Math.abs(pos.getY() - origin.getY()) * 3.5;
+            if (pos.getY() > origin.getY() + 1) {
+                yPenalty += 18.0;
+            }
             double score = dist + yPenalty;
             if (score < bestScore) {
                 bestScore = score;
@@ -578,9 +586,9 @@ public final class AutoMineNearestLogTask implements BotTask {
 
                     // Prefer trunk-level logs over canopy logs to reduce erratic retargeting.
                     double distSq = pos.getSquaredDistance(origin);
-                    double verticalPenalty = Math.abs(pos.getY() - origin.getY()) * 2.5;
-                    if (pos.getY() > origin.getY() + 2) {
-                        verticalPenalty += 8.0;
+                    double verticalPenalty = Math.abs(pos.getY() - origin.getY()) * 3.0;
+                    if (pos.getY() > origin.getY() + 1) {
+                        verticalPenalty += 16.0;
                     }
 
                     double score = distSq + verticalPenalty;
@@ -764,6 +772,14 @@ public final class AutoMineNearestLogTask implements BotTask {
             context.actions().setRight(true);
         } else if (yawDelta < -35.0F) {
             context.actions().setLeft(true);
+        }
+
+        // Jump immediately when a solid block is in front at feet or head level.
+        BlockPos aheadFeet = player.getBlockPos().offset(player.getHorizontalFacing());
+        BlockPos aheadHead = aheadFeet.up();
+        boolean blockedAhead = !context.world().getBlockState(aheadFeet).isAir() || !context.world().getBlockState(aheadHead).isAir();
+        if (player.isOnGround() && blockedAhead) {
+            context.actions().setJump(true);
         }
 
         double horizontalDistSq = dx * dx + dz * dz;
