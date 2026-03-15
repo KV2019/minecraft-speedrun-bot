@@ -223,6 +223,15 @@ public final class MineDownToStoneTask implements BotTask {
             // No valid direction yet — keep digging deeper.
         }
 
+        // Centre on the block before digging straight down.
+        Vec3d blockCenter = Vec3d.ofBottomCenter(player.getBlockPos());
+        double offX = Math.abs(player.getX() - blockCenter.x);
+        double offZ = Math.abs(player.getZ() - blockCenter.z);
+        if (offX > 0.2 || offZ > 0.2) {
+            moveToward(context, blockCenter, 0);
+            return;
+        }
+
         if (mineBlock(context, belowPos, Direction.UP, true)) {
             announceCobbleProgress(player);
         }
