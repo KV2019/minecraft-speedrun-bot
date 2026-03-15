@@ -913,9 +913,8 @@ public final class MineDownToStoneTask implements BotTask {
         ClientPlayerEntity player = context.player();
         context.actions().setForward(true);
 
-        // While in water: press jump to swim upward and clamp pitch to horizontal so
-        // the bot doesn't dive by looking down.
-        if (player.isTouchingWater()) {
+        // In water: only surface when air supply is running low (3 bubbles = 60 ticks).
+        if (player.isTouchingWater() && player.getAir() <= 60) {
             context.actions().setJump(true);
         }
 

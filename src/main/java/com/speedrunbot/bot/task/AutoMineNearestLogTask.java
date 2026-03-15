@@ -99,6 +99,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private BlockPos dropCollectPos;
     private int dropCollectTicks;
     private int dropCollectStartLogCount;
+    private float wanderYaw;
     private int targetLogCount;
     private int targetAssignedTick;
     @SuppressWarnings("null")
@@ -139,6 +140,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectStartLogCount = 0;
         targetLogCount = ThreadLocalRandom.current().nextInt(LOG_TARGET_MIN, LOG_TARGET_MAX + 1);
         targetAssignedTick = 0;
+        wanderYaw = context.player().getYaw();
         resetFailureTelemetry();
         summaryEmitted = false;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs (goal: " + targetLogCount + ")"), true);
@@ -242,16 +244,17 @@ public final class AutoMineNearestLogTask implements BotTask {
                     return;
                 }
 
-                // Controlled exploration while searching: move several blocks ahead and hop obstacles.
-                Vec3d exploreTarget = context.player()
-                    .getRotationVec(1.0F)
-                    .multiply(6.0)
-                    .add(context.player().getX(), context.player().getY(), context.player().getZ());
-                moveToward(
-                    context,
-                    exploreTarget,
-                    8
+                // Sweep in 60-degree increments every 40 ticks so the bot scans all directions.
+                if (noLogTicks > 0 && noLogTicks % 40 == 0) {
+                    wanderYaw = MathHelper.wrapDegrees(wanderYaw + 60.0F);
+                }
+                double wanderRad = Math.toRadians(wanderYaw);
+                Vec3d exploreTarget = new Vec3d(
+                    context.player().getX() - Math.sin(wanderRad) * 8.0,
+                    context.player().getY(),
+                    context.player().getZ() + Math.cos(wanderRad) * 8.0
                 );
+                moveToward(context, exploreTarget, 8);
                 debug(context, "acquire none noLogTicks=" + noLogTicks);
                 return;
             }
@@ -1108,9 +1111,9 @@ public final class AutoMineNearestLogTask implements BotTask {
         context.actions().setForward(true);
         context.actions().setSprint(true);
 
-        // While in water: press jump to swim upward and clamp pitch to horizontal so the
-        // bot doesn't dive by looking down.
-        if (player.isTouchingWater()) {
+        // In water: only surface when air supply is running low (3 bubbles = 60 ticks).
+        // Pressing jump every tick causes visible bobbing at the surface.
+        if (player.isTouchingWater() && player.getAir() <= 60) {
             context.actions().setJump(true);
         }
 
