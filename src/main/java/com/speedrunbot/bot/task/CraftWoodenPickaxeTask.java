@@ -37,9 +37,6 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     private static final int RESULT_SLOT = 0;
     private static final int[] PLANK_SLOTS  = {1, 2, 3};
     private static final int[] STICK_SLOTS  = {5, 8};
-    private static final int TABLE_RECOVER_MAX_TICKS = 80;
-    private static final int TABLE_PICKUP_WINDOW_TICKS = 20;
-
     private State state;
     private int stateTicks;
     private int actionCooldown;
@@ -51,7 +48,6 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     private enum CraftPhase { PLANKS, STICKS, TAKE_RESULT }
     private CraftPhase craftPhase;
     private int craftStepIndex;
-    private int tablePickupTicks;
 
     @Override
     public String name() {
@@ -67,7 +63,6 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         supportBlockPos = null;
         craftPhase = CraftPhase.PLANKS;
         craftStepIndex = 0;
-        tablePickupTicks = TABLE_PICKUP_WINDOW_TICKS;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Crafting wooden pickaxe"), true);
     }
 
@@ -488,10 +483,4 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         }
     }
 
-    private static Direction sideClosestToPlayer(ClientPlayerEntity player, Vec3d blockCenter) {
-        double dx = player.getX() - blockCenter.x;
-        double dy = player.getEyeY() - blockCenter.y;
-        double dz = player.getZ() - blockCenter.z;
-        return Direction.getFacing(dx, dy, dz);
-    }
 }
