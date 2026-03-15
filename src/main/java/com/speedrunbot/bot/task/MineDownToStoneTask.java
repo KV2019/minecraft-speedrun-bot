@@ -28,11 +28,12 @@ public final class MineDownToStoneTask implements BotTask {
         RETURN_TO_SHAFT,
         EQUIP_TOWER_BLOCK,
         TOWER_UP,
+        STAIRCASE_UP,
         DONE
     }
 
     private static final int COBBLESTONE_TARGET = 16;
-    private static final int INITIAL_STONE_TARGET = 4;
+    private static final int INITIAL_STONE_TARGET = 2;
     private static final int MAX_DIG_DEPTH = 20;
     private static final int SURFACE_MARGIN = 1;
     private static final Item[] TOWER_BLOCKS = {
@@ -51,6 +52,7 @@ public final class MineDownToStoneTask implements BotTask {
     private int lastCobblestoneCount;
     private BlockPos shaftTopPos;
     private Direction tunnelDirection;
+    private Direction staircaseDirection;
 
     @Override
     public String name() {
@@ -67,6 +69,7 @@ public final class MineDownToStoneTask implements BotTask {
         lastCobblestoneCount = startingCobblestone;
         shaftTopPos = context.player().getBlockPos().toImmutable();
         tunnelDirection = context.player().getHorizontalFacing();
+        staircaseDirection = context.player().getHorizontalFacing();
         context.player().sendMessage(Text.literal("[SpeedrunBot] Mining to stone, then tunneling"), true);
     }
 
@@ -86,6 +89,7 @@ public final class MineDownToStoneTask implements BotTask {
             case RETURN_TO_SHAFT -> tickReturnToShaft(context);
             case EQUIP_TOWER_BLOCK -> tickEquipTowerBlock(context);
             case TOWER_UP -> tickTowerUp(context);
+            case STAIRCASE_UP -> tickStaircaseUp(context);
             case DONE -> {
             }
         }
@@ -221,8 +225,8 @@ public final class MineDownToStoneTask implements BotTask {
 
     private void tickEquipTowerBlock(BotContext context) {
         if (!equipItem(context, TOWER_BLOCKS)) {
-            context.player().sendMessage(Text.literal("[SpeedrunBot] No tower blocks, stopping underground"), true);
-            transition(State.DONE);
+            context.player().sendMessage(Text.literal("[SpeedrunBot] No tower blocks, mining staircase up"), true);
+            transition(State.STAIRCASE_UP);
             return;
         }
 
@@ -234,6 +238,12 @@ public final class MineDownToStoneTask implements BotTask {
         ClientPlayerEntity player = context.player();
         ClientPlayerInteractionManager interaction = context.client().interactionManager;
         if (interaction == null) {
+            return;
+        }
+
+        if (!hasAnyTowerBlock(player)) {
+            player.sendMessage(Text.literal("[SpeedrunBot] Out of tower blocks, mining staircase up"), true);
+            transition(State.STAIRCASE_UP);
             return;
         }
 
@@ -273,6 +283,47 @@ public final class MineDownToStoneTask implements BotTask {
         actionCooldown = 1;
     }
 
+    private void tickStaircaseUp(BotContext context) {
+        ClientPlayerEntity player = context.player();
+        if (player.getBlockY() >= startSurfaceY - SURFACE_MARGIN) {
+            player.sendMessage(Text.literal("[SpeedrunBot] Back near surface"), true);
+            transition(State.DONE);
+            return;
+        }
+
+        BlockPos basePos = player.getBlockPos();
+        if (!isValidStairDirection(context, basePos, staircaseDirection)) {
+            Direction next = pickStairDirection(context, basePos, staircaseDirection);
+            if (next == null) {
+                player.sendMessage(Text.literal("[SpeedrunBot] No staircase direction, stopping"), true);
+                transition(State.DONE);
+                return;
+            }
+            staircaseDirection = next;
+        }
+
+        BlockPos stepBlock = basePos.offset(staircaseDirection);
+        BlockPos clearHead = stepBlock.up();
+        BlockPos clearTop = clearHead.up();
+
+        if (!context.world().getBlockState(clearTop).isAir()) {
+            mineStairBlock(context, clearTop, staircaseDirection.getOpposite());
+            return;
+        }
+
+        if (!context.world().getBlockState(clearHead).isAir()) {
+            mineStairBlock(context, clearHead, staircaseDirection.getOpposite());
+            return;
+        }
+
+        Vec3d stepTopCenter = Vec3d.ofCenter(stepBlock).add(0.0, 1.0, 0.0);
+        lookAt(player, stepTopCenter);
+        context.actions().setForward(true);
+        if (player.isOnGround()) {
+            context.actions().setJump(true);
+        }
+    }
+
     private boolean mineBlock(BotContext context, BlockPos target, Direction hitSide, boolean lookDown) {
         ClientPlayerInteractionManager interaction = context.client().interactionManager;
         if (interaction == null) {
@@ -295,6 +346,85 @@ public final class MineDownToStoneTask implements BotTask {
         context.player().swingHand(Hand.MAIN_HAND);
         context.actions().setAttack(true);
         return true;
+    }
+
+    private boolean mineStairBlock(BotContext context, BlockPos target, Direction hitSide) {
+        BlockState state = context.world().getBlockState(target);
+        if (state.isAir()) {
+            return false;
+        }
+
+        if (state.isToolRequired() || state.isIn(BlockTags.PICKAXE_MINEABLE)) {
+            equipItem(context, Items.STONE_PICKAXE, Items.WOODEN_PICKAXE);
+        } else {
+            equipFist(context.player());
+        }
+
+        return mineBlock(context, target, hitSide, false);
+    }
+
+    private static boolean hasAnyTowerBlock(ClientPlayerEntity player) {
+        for (int i = 0; i < player.getInventory().size(); i++) {
+            ItemStack stack = player.getInventory().getStack(i);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            for (Item tower : TOWER_BLOCKS) {
+                if (stack.isOf(tower)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isValidStairDirection(BotContext context, BlockPos basePos, Direction direction) {
+        if (direction == null || direction.getAxis().isVertical()) {
+            return false;
+        }
+        BlockPos stepBlock = basePos.offset(direction);
+        BlockState stepState = context.world().getBlockState(stepBlock);
+        return !stepState.isAir() && stepState.getFluidState().isEmpty();
+    }
+
+    private static Direction pickStairDirection(BotContext context, BlockPos basePos, Direction preferred) {
+        Direction[] dirs = new Direction[]{Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
+
+        if (isValidStairDirection(context, basePos, preferred)) {
+            return preferred;
+        }
+
+        Direction best = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (Direction dir : dirs) {
+            if (!isValidStairDirection(context, basePos, dir)) {
+                continue;
+            }
+
+            BlockPos stepBlock = basePos.offset(dir);
+            int score = 0;
+            if (context.world().getBlockState(stepBlock.up()).isAir()) {
+                score += 2;
+            }
+            if (context.world().getBlockState(stepBlock.up(2)).isAir()) {
+                score += 2;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = dir;
+            }
+        }
+
+        return best;
+    }
+
+    private static void equipFist(ClientPlayerEntity player) {
+        for (int slot = 0; slot < 9; slot++) {
+            if (player.getInventory().getStack(slot).isEmpty()) {
+                selectHotbarSlot(player, slot);
+                return;
+            }
+        }
     }
 
     private boolean equipItem(BotContext context, Item... items) {

@@ -63,7 +63,8 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int CLEAR_AREA_FINISH_TICKS = 80;
     private static final int MAX_CLUSTER_SIZE = 192;
     private static final int TARGET_AVOID_TICKS = 100;
-    private static final int DROP_COLLECTION_TICKS = 24;
+    private static final int DROP_COLLECTION_TICKS = 50;
+    private static final int TARGET_BREAK_TIMEOUT_TICKS = 20 * 5;
     private static final int LOG_TARGET_MIN = 5;
     private static final int LOG_TARGET_MAX = 8;
 
@@ -93,6 +94,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private int dropCollectTicks;
     private int dropCollectStartLogCount;
     private int targetLogCount;
+    private int targetAssignedTick;
     @SuppressWarnings("null")
     private final EnumMap<FailureReason, Integer> failureCounts = new EnumMap<>(FailureReason.class);
     private boolean summaryEmitted;
@@ -130,6 +132,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
         targetLogCount = ThreadLocalRandom.current().nextInt(LOG_TARGET_MIN, LOG_TARGET_MAX + 1);
+        targetAssignedTick = 0;
         resetFailureTelemetry();
         summaryEmitted = false;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs (goal: " + targetLogCount + ")"), true);
@@ -214,6 +217,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectTicks--;
         Vec3d targetCenter = Vec3d.ofCenter(dropCollectPos);
         lookAt(context.player(), targetCenter);
+        // Always walk onto the just-broken log position before trying the next target.
         moveToward(context, targetCenter, 8);
     }
 
@@ -263,6 +267,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         sameTargetTicks = 0;
         noSightTicks = 0;
         obstructedTicks = 0;
+        targetAssignedTick = ticks;
         lastProgressPos = new Vec3d(context.player().getX(), context.player().getY(), context.player().getZ());
         noMoveTicks = 0;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Target log at " + targetLog.toShortString()), true);
@@ -279,6 +284,13 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         Vec3d targetCenter = Vec3d.ofCenter(targetLog);
         lookAt(context.player(), targetCenter);
+
+        if (targetAssignedTick > 0 && ticks - targetAssignedTick > TARGET_BREAK_TIMEOUT_TICKS) {
+            recordFailure(FailureReason.NO_PROGRESS_BREAK);
+            startRecoverWithAvoid(context, "target_break_timeout_approach", true);
+            return;
+        }
+
         double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
         if (distanceSq > MINE_RANGE_SQ) {
             moveToward(context, targetCenter, 12);
@@ -308,6 +320,13 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         Vec3d targetCenter = Vec3d.ofCenter(targetLog);
+
+        if (targetAssignedTick > 0 && ticks - targetAssignedTick > TARGET_BREAK_TIMEOUT_TICKS) {
+            recordFailure(FailureReason.NO_PROGRESS_BREAK);
+            startRecoverWithAvoid(context, "target_break_timeout_mine", true);
+            return;
+        }
+
         double distanceSq = context.player().squaredDistanceTo(targetCenter.x, targetCenter.y, targetCenter.z);
         if (distanceSq > MINE_RANGE_SQ) {
             transition(context, MinerState.APPROACH_TARGET, "out_of_range");
@@ -460,6 +479,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         targetLog = null;
+        targetAssignedTick = 0;
         targetMissingTicks = 0;
         sameTargetTicks = 0;
         noSightTicks = 0;
@@ -531,6 +551,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
         targetLogCount = 0;
+        targetAssignedTick = 0;
         resetFailureTelemetry();
         summaryEmitted = false;
         debug(context, "stop");
