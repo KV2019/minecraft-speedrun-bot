@@ -96,7 +96,13 @@ public final class BotController {
             }
 
             if (activeTask() instanceof MineDownToStoneTask && !hasStoneCraftPrerequisites(context)) {
-                sendStatus(client, "Stone mining ended early; retrying until crafting prerequisites are ready");
+                if (!hasAnyPickaxe(context)) {
+                    // No pickaxe at all — step back to craft wooden pickaxe
+                    activeTaskIndex = indexOfTask(CraftWoodenPickaxeTask.class);
+                    sendStatus(client, "No pickaxe found; stepping back to CraftWoodenPickaxe");
+                } else {
+                    sendStatus(client, "Stone mining ended early; retrying until crafting prerequisites are ready");
+                }
                 return;
             }
 
@@ -136,6 +142,24 @@ public final class BotController {
     private static boolean hasStoneCraftPrerequisites(BotContext context) {
         return countItem(context, Items.COBBLESTONE) + countItem(context, Items.COBBLED_DEEPSLATE) >= 3
             && countItem(context, Items.STICK) >= 2;
+    }
+
+    private static boolean hasAnyPickaxe(BotContext context) {
+        Item[] pickaxes = {
+            Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE,
+            Items.STONE_PICKAXE, Items.GOLDEN_PICKAXE, Items.WOODEN_PICKAXE
+        };
+        for (Item p : pickaxes) {
+            if (countItem(context, p) > 0) return true;
+        }
+        return false;
+    }
+
+    private int indexOfTask(Class<?> cls) {
+        for (int i = 0; i < tasks.size(); i++) {
+            if (tasks.get(i).getClass() == cls) return i;
+        }
+        return 0;
     }
 
     private static int countItem(BotContext context, Item item) {
