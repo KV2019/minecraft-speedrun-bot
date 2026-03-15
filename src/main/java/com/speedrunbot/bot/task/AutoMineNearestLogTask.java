@@ -2,6 +2,7 @@ package com.speedrunbot.bot.task;
 
 import com.speedrunbot.bot.BotContext;
 import java.util.ArrayDeque;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Set;
 import net.minecraft.block.BlockState;
@@ -32,10 +33,22 @@ public final class AutoMineNearestLogTask implements BotTask {
         DONE
     }
 
+    private enum FailureReason {
+        NO_PROGRESS_MOVE,
+        NO_PROGRESS_BREAK,
+        NO_LOS_FALSE_NEGATIVE,
+        OVERHEAD_TARGET_REJECTED,
+        OBSTACLE_LOOP,
+        SERVER_DESYNC,
+        PATH_OSCILLATION
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(AutoMineNearestLogTask.class);
     private static final boolean DEBUG_TELEMETRY = false;
     private static final int DEBUG_PRINT_INTERVAL_TICKS = 20;
     private static final boolean DEBUG_TO_ACTIONBAR = false;
+    private static final boolean TRACE_RECOVER_TO_ACTIONBAR = true;
+    private static final int OVERHEAD_REJECT_DELTA_Y = 3;
 
     private static final int SEARCH_RADIUS_XZ = 10;
     private static final int SEARCH_RADIUS_Y = 8;
@@ -76,6 +89,8 @@ public final class AutoMineNearestLogTask implements BotTask {
     private BlockPos dropCollectPos;
     private int dropCollectTicks;
     private int dropCollectStartLogCount;
+    private final EnumMap<FailureReason, Integer> failureCounts = new EnumMap<>(FailureReason.class);
+    private boolean summaryEmitted;
 
     @Override
     public String name() {
@@ -109,6 +124,8 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectPos = null;
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
+        resetFailureTelemetry();
+        summaryEmitted = false;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
         debug(context, "start logs=" + startingLogItemCount);
     }
@@ -129,6 +146,7 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         if (awaitingServerConfirm) {
             if (recentlyBrokenLog != null && isLog(context, recentlyBrokenLog)) {
+                recordFailure(FailureReason.SERVER_DESYNC);
                 awaitingServerConfirm = false;
                 targetLog = recentlyBrokenLog.toImmutable();
                 recentlyBrokenLog = null;
@@ -256,6 +274,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             moveToward(context, targetCenter, 12);
             updateMovementProgress(context);
             if (noMoveTicks > 30) {
+                recordFailure(FailureReason.NO_PROGRESS_MOVE);
                 transition(context, MinerState.RECOVER, "approach_no_progress");
                 return;
             }
@@ -305,6 +324,9 @@ public final class AutoMineNearestLogTask implements BotTask {
         obstructedTicks = 0;
 
         if (!hasDirectLineOfSight(context, mineTarget)) {
+            if (mineTarget.equals(targetLog) && canRayHitLog(context, context.player().getEyePos(), targetLog)) {
+                recordFailure(FailureReason.NO_LOS_FALSE_NEGATIVE);
+            }
             BlockPos obstruction = detectObstacleBlock(context, targetLog);
             if (isClearableObstacle(context, obstruction)) {
                 obstacleBlock = obstruction.toImmutable();
@@ -333,6 +355,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (mineTarget.equals(targetLog)) {
             sameTargetTicks++;
             if (sameTargetTicks > SAME_TARGET_STUCK_TICKS) {
+                recordFailure(FailureReason.NO_PROGRESS_BREAK);
                 startRecoverWithAvoid(context, "same_target_stuck", false);
                 return;
             }
@@ -379,6 +402,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (!hasDirectLineOfSight(context, obstacleBlock)) {
             moveToward(context, center, 12);
             if (obstacleClearTicks > MAX_OBSTACLE_CLEAR_TICKS) {
+                recordFailure(FailureReason.OBSTACLE_LOOP);
                 startRecoverWithAvoid(context, "obstacle_no_los_timeout", true);
             }
             return;
@@ -400,6 +424,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         if (obstacleClearTicks > MAX_OBSTACLE_CLEAR_TICKS) {
+            recordFailure(FailureReason.OBSTACLE_LOOP);
             startRecoverWithAvoid(context, "obstacle_clear_timeout", true);
         }
     }
@@ -439,6 +464,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     }
 
     private void startRecoverWithAvoid(BotContext context, String reason, boolean avoidCurrentTarget) {
+        recordFailure(FailureReason.PATH_OSCILLATION);
         if (avoidCurrentTarget && targetLog != null) {
             avoidTarget = targetLog.toImmutable();
             avoidTargetUntilTick = ticks + TARGET_AVOID_TICKS;
@@ -452,6 +478,9 @@ public final class AutoMineNearestLogTask implements BotTask {
         if (ticks >= MAX_TICKS && !completed) {
             debug(context, "finish reason=timeout");
         }
+        if ((completed || ticks >= MAX_TICKS) && !summaryEmitted) {
+            emitRunSummary(context, completed ? "done" : "timeout");
+        }
         return completed || ticks >= MAX_TICKS;
     }
 
@@ -460,6 +489,10 @@ public final class AutoMineNearestLogTask implements BotTask {
         ClientPlayerInteractionManager interaction = context.client().interactionManager;
         if (interaction != null) {
             interaction.cancelBlockBreaking();
+        }
+
+        if (!summaryEmitted && ticks > 0) {
+            emitRunSummary(context, "stopped");
         }
 
         targetLog = null;
@@ -487,12 +520,17 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectPos = null;
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
+        resetFailureTelemetry();
+        summaryEmitted = false;
         debug(context, "stop");
     }
 
     private void transition(BotContext context, MinerState next, String reason) {
         if (state != next) {
             debug(context, "state " + state + " -> " + next + " reason=" + reason);
+            if (next == MinerState.RECOVER && TRACE_RECOVER_TO_ACTIONBAR) {
+                context.player().sendMessage(Text.literal("[SpeedrunBot] Recover: " + reason), true);
+            }
         }
         state = next;
         stateTicks = 0;
@@ -600,7 +638,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         return null;
     }
 
-    private static BlockPos findNearestLog(BotContext context) {
+    private BlockPos findNearestLog(BotContext context) {
         BlockPos origin = context.player().getBlockPos();
         BlockPos best = null;
         double bestDistSq = Double.MAX_VALUE;
@@ -611,6 +649,11 @@ public final class AutoMineNearestLogTask implements BotTask {
                     BlockPos pos = origin.add(dx, dy, dz);
                     BlockState state = context.world().getBlockState(pos);
                     if (!state.isIn(BlockTags.LOGS)) {
+                        continue;
+                    }
+
+                    if (isOverheadTarget(origin, pos)) {
+                        recordFailure(FailureReason.OVERHEAD_TARGET_REJECTED);
                         continue;
                     }
 
@@ -635,6 +678,40 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         return best;
+    }
+
+    private static boolean isOverheadTarget(BlockPos origin, BlockPos pos) {
+        return pos.getY() >= origin.getY() + OVERHEAD_REJECT_DELTA_Y;
+    }
+
+    private void resetFailureTelemetry() {
+        failureCounts.clear();
+        for (FailureReason reason : FailureReason.values()) {
+            failureCounts.put(reason, 0);
+        }
+    }
+
+    private void recordFailure(FailureReason reason) {
+        failureCounts.put(reason, failureCounts.getOrDefault(reason, 0) + 1);
+    }
+
+    private int failureCount(FailureReason reason) {
+        return failureCounts.getOrDefault(reason, 0);
+    }
+
+    private void emitRunSummary(BotContext context, String endReason) {
+        summaryEmitted = true;
+        String line = "[SpeedrunBot] Miner summary (" + endReason + ") logs=" + collectedLogs +
+            " move=" + failureCount(FailureReason.NO_PROGRESS_MOVE) +
+            " break=" + failureCount(FailureReason.NO_PROGRESS_BREAK) +
+            " noLos=" + failureCount(FailureReason.NO_LOS_FALSE_NEGATIVE) +
+            " overhead=" + failureCount(FailureReason.OVERHEAD_TARGET_REJECTED) +
+            " obstacle=" + failureCount(FailureReason.OBSTACLE_LOOP) +
+            " desync=" + failureCount(FailureReason.SERVER_DESYNC) +
+            " osc=" + failureCount(FailureReason.PATH_OSCILLATION);
+
+        LOGGER.info(line);
+        context.player().sendMessage(Text.literal(line), false);
     }
 
     private static boolean isLog(BotContext context, BlockPos pos) {
