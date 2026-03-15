@@ -8,6 +8,9 @@ import com.speedrunbot.bot.task.MineDownToStoneTask;
 import com.speedrunbot.bot.task.CraftStoneToolsTask;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.Items;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 
 public final class BotController {
@@ -90,6 +93,11 @@ public final class BotController {
                 return;
             }
 
+            if (activeTask() instanceof MineDownToStoneTask && !hasStoneCraftPrerequisites(context)) {
+                sendStatus(client, "Stone mining ended early; retrying until crafting prerequisites are ready");
+                return;
+            }
+
             activeTaskIndex = (activeTaskIndex + 1) % tasks.size();
             sendStatus(client, "Advanced to task: " + activeTask().name());
         }
@@ -121,5 +129,21 @@ public final class BotController {
         }
 
         client.player.sendMessage(Text.literal("[SpeedrunBot] " + message), true);
+    }
+
+    private static boolean hasStoneCraftPrerequisites(BotContext context) {
+        return countItem(context, Items.COBBLESTONE) + countItem(context, Items.COBBLED_DEEPSLATE) >= 3
+            && countItem(context, Items.STICK) >= 2;
+    }
+
+    private static int countItem(BotContext context, Item item) {
+        int total = 0;
+        for (int i = 0; i < context.player().getInventory().size(); i++) {
+            ItemStack stack = context.player().getInventory().getStack(i);
+            if (stack.isOf(item)) {
+                total += stack.getCount();
+            }
+        }
+        return total;
     }
 }

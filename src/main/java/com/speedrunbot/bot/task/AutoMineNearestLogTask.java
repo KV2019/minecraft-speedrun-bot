@@ -9,8 +9,14 @@ import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -49,22 +55,22 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int DEBUG_PRINT_INTERVAL_TICKS = 20;
     private static final boolean DEBUG_TO_ACTIONBAR = false;
     private static final boolean TRACE_RECOVER_TO_ACTIONBAR = true;
-    private static final int OVERHEAD_REJECT_DELTA_Y = 3;
+    private static final int OVERHEAD_REJECT_DELTA_Y = 2;
 
     private static final int SEARCH_RADIUS_XZ = 10;
     private static final int SEARCH_RADIUS_Y = 8;
     private static final double MINE_RANGE_SQ = 4.5 * 4.5;
     private static final int MAX_TICKS = 20 * 180;
     private static final int POST_BREAK_RETARGET_COOLDOWN = 12;
-    private static final int SAME_TARGET_STUCK_TICKS = 80;
+    private static final int SAME_TARGET_STUCK_TICKS = 110;
     private static final int MAX_NO_SIGHT_TICKS = 30;
     private static final int MAX_OBSTRUCTED_TICKS = 30;
     private static final int MAX_OBSTACLE_CLEAR_TICKS = 40;
     private static final int CLEAR_AREA_FINISH_TICKS = 80;
     private static final int MAX_CLUSTER_SIZE = 192;
-    private static final int TARGET_AVOID_TICKS = 100;
+    private static final int TARGET_AVOID_TICKS = 120;
     private static final int DROP_COLLECTION_TICKS = 50;
-    private static final int TARGET_BREAK_TIMEOUT_TICKS = 20 * 5;
+    private static final int TARGET_BREAK_TIMEOUT_TICKS = 20 * 7;
     private static final int LOG_TARGET_MIN = 5;
     private static final int LOG_TARGET_MAX = 8;
 
@@ -285,6 +291,12 @@ public final class AutoMineNearestLogTask implements BotTask {
         Vec3d targetCenter = Vec3d.ofCenter(targetLog);
         lookAt(context.player(), targetCenter);
 
+        if (isHighLogTooCloseAndNotVisible(context, targetLog)) {
+            repositionForHighLog(context, targetCenter);
+            updateMovementProgress(context);
+            return;
+        }
+
         if (targetAssignedTick > 0 && ticks - targetAssignedTick > TARGET_BREAK_TIMEOUT_TICKS) {
             recordFailure(FailureReason.NO_PROGRESS_BREAK);
             startRecoverWithAvoid(context, "target_break_timeout_approach", true);
@@ -321,6 +333,11 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         Vec3d targetCenter = Vec3d.ofCenter(targetLog);
 
+        if (isHighLogTooCloseAndNotVisible(context, targetLog)) {
+            repositionForHighLog(context, targetCenter);
+            return;
+        }
+
         if (targetAssignedTick > 0 && ticks - targetAssignedTick > TARGET_BREAK_TIMEOUT_TICKS) {
             recordFailure(FailureReason.NO_PROGRESS_BREAK);
             startRecoverWithAvoid(context, "target_break_timeout_mine", true);
@@ -344,7 +361,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             }
 
             obstructedTicks++;
-            moveToward(context, targetCenter, 14);
+            moveToward(context, targetCenter, 0);
             if (obstructedTicks > MAX_OBSTRUCTED_TICKS) {
                 startRecoverWithAvoid(context, "obstructed_timeout", true);
             }
@@ -365,7 +382,7 @@ public final class AutoMineNearestLogTask implements BotTask {
             }
 
             noSightTicks++;
-            moveToward(context, targetCenter, 14);
+            moveToward(context, targetCenter, 0);
             if (noSightTicks > MAX_NO_SIGHT_TICKS) {
                 startRecoverWithAvoid(context, "no_los_timeout", true);
             }
@@ -375,6 +392,7 @@ public final class AutoMineNearestLogTask implements BotTask {
 
         Vec3d mineCenter = Vec3d.ofCenter(mineTarget);
         lookAt(context.player(), mineCenter);
+        equipBestToolForBlock(context, mineTarget);
         Direction hitSide = sideClosestToPlayer(context.player(), mineCenter);
         interaction.attackBlock(mineTarget, hitSide);
         interaction.updateBlockBreakingProgress(mineTarget, hitSide);
@@ -429,7 +447,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         lookAt(context.player(), center);
 
         if (!hasDirectLineOfSight(context, obstacleBlock)) {
-            moveToward(context, center, 12);
+            moveToward(context, center, 0);
             if (obstacleClearTicks > MAX_OBSTACLE_CLEAR_TICKS) {
                 recordFailure(FailureReason.OBSTACLE_LOOP);
                 startRecoverWithAvoid(context, "obstacle_no_los_timeout", true);
@@ -438,6 +456,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         }
 
         Direction hitSide = sideClosestToPlayer(context.player(), center);
+        equipBestToolForBlock(context, obstacleBlock);
         interaction.attackBlock(obstacleBlock, hitSide);
         interaction.updateBlockBreakingProgress(obstacleBlock, hitSide);
         context.player().swingHand(Hand.MAIN_HAND);
@@ -617,10 +636,44 @@ public final class AutoMineNearestLogTask implements BotTask {
 
     private BlockPos pickClusterTarget(BotContext context) {
         BlockPos origin = context.player().getBlockPos();
-        BlockPos best = null;
-        double bestScore = Double.MAX_VALUE;
+        Vec3d eye = context.player().getEyePos();
 
         boolean avoidActive = avoidTarget != null && ticks < avoidTargetUntilTick;
+
+        BlockPos best = pickBestTarget(context, origin, eye, avoidActive, true, true);
+        if (best != null) {
+            return best;
+        }
+
+        best = pickBestTarget(context, origin, eye, avoidActive, false, true);
+        if (best != null) {
+            return best;
+        }
+
+        best = pickBestTarget(context, origin, eye, avoidActive, false, false);
+        if (best != null) {
+            return best;
+        }
+
+        // If everything was filtered by temporary avoid, allow retry after timeout.
+        if (avoidActive && ticks + 1 >= avoidTargetUntilTick) {
+            avoidTarget = null;
+            avoidTargetUntilTick = 0;
+        }
+
+        return null;
+    }
+
+    private BlockPos pickBestTarget(
+        BotContext context,
+        BlockPos origin,
+        Vec3d eye,
+        boolean avoidActive,
+        boolean preferLow,
+        boolean requireReachable
+    ) {
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
 
         for (BlockPos pos : currentCluster) {
             if (!isLog(context, pos)) {
@@ -635,43 +688,28 @@ public final class AutoMineNearestLogTask implements BotTask {
                 continue;
             }
 
-            double dist = pos.getSquaredDistance(origin);
-            double yPenalty = Math.abs(pos.getY() - origin.getY()) * 3.5;
-            if (pos.getY() > origin.getY() + 1) {
-                yPenalty += 25.0;
+            boolean reachable = canRayHitLog(context, eye, pos);
+            if (requireReachable && !reachable) {
+                continue;
             }
-            double score = dist + yPenalty;
+
+            if (preferLow && isOverheadTarget(origin, pos)) {
+                continue;
+            }
+
+            double score = targetScore(origin, pos, reachable);
             if (score < bestScore) {
                 bestScore = score;
                 best = pos.toImmutable();
             }
         }
 
-        if (best != null) {
-            return best;
-        }
-
-        // If all exposed-face filters fail, still allow any remaining log in the cluster.
-        for (BlockPos pos : currentCluster) {
-            if (isLog(context, pos)) {
-                if (avoidActive && pos.equals(avoidTarget)) {
-                    continue;
-                }
-                return pos.toImmutable();
-            }
-        }
-
-        // If everything was filtered by temporary avoid, allow retry after timeout.
-        if (avoidActive && ticks + 1 >= avoidTargetUntilTick) {
-            avoidTarget = null;
-            avoidTargetUntilTick = 0;
-        }
-
-        return null;
+        return best;
     }
 
     private BlockPos findNearestLog(BotContext context) {
         BlockPos origin = context.player().getBlockPos();
+        Vec3d eye = context.player().getEyePos();
         BlockPos best = null;
         double bestDistSq = Double.MAX_VALUE;
 
@@ -693,14 +731,13 @@ public final class AutoMineNearestLogTask implements BotTask {
                         continue;
                     }
 
-                    // Prefer trunk-level logs over canopy logs to reduce erratic retargeting.
-                    double distSq = pos.getSquaredDistance(origin);
-                    double verticalPenalty = Math.abs(pos.getY() - origin.getY()) * 3.0;
-                    if (pos.getY() > origin.getY() + 1) {
-                        verticalPenalty += 24.0;
+                    boolean reachable = canRayHitLog(context, eye, pos);
+                    if (!reachable) {
+                        continue;
                     }
 
-                    double score = distSq + verticalPenalty;
+                    // Prefer trunk-level logs with direct break visibility.
+                    double score = targetScore(origin, pos, true);
                     if (score < bestDistSq) {
                         bestDistSq = score;
                         best = pos.toImmutable();
@@ -714,6 +751,18 @@ public final class AutoMineNearestLogTask implements BotTask {
 
     private static boolean isOverheadTarget(BlockPos origin, BlockPos pos) {
         return pos.getY() >= origin.getY() + OVERHEAD_REJECT_DELTA_Y;
+    }
+
+    private static double targetScore(BlockPos origin, BlockPos pos, boolean directlyReachable) {
+        double dist = pos.getSquaredDistance(origin);
+        double yPenalty = Math.abs(pos.getY() - origin.getY()) * 4.0;
+        if (pos.getY() > origin.getY() + 1) {
+            yPenalty += 30.0;
+        }
+
+        // Strongly discourage targets that are currently hard to ray-hit.
+        double reachPenalty = directlyReachable ? 0.0 : 35.0;
+        return dist + yPenalty + reachPenalty;
     }
 
     private void resetFailureTelemetry() {
@@ -899,6 +948,141 @@ public final class AutoMineNearestLogTask implements BotTask {
         return total;
     }
 
+    private void equipBestToolForBlock(BotContext context, BlockPos target) {
+        if (target == null) {
+            return;
+        }
+
+        BlockState state = context.world().getBlockState(target);
+        if (state.isAir()) {
+            return;
+        }
+
+        if (state.isIn(BlockTags.LOGS) || state.isIn(BlockTags.AXE_MINEABLE)) {
+            boolean equippedAxe = equipPreferredItem(context,
+                Items.NETHERITE_AXE,
+                Items.DIAMOND_AXE,
+                Items.IRON_AXE,
+                Items.STONE_AXE,
+                Items.GOLDEN_AXE,
+                Items.WOODEN_AXE
+            );
+            if (!equippedAxe) {
+                // Early game can start without an axe; keep mining logs with empty hand.
+                equipFist(context.player());
+            }
+            return;
+        }
+
+        if (state.isIn(BlockTags.PICKAXE_MINEABLE)) {
+            equipPreferredItem(context,
+                Items.NETHERITE_PICKAXE,
+                Items.DIAMOND_PICKAXE,
+                Items.IRON_PICKAXE,
+                Items.STONE_PICKAXE,
+                Items.GOLDEN_PICKAXE,
+                Items.WOODEN_PICKAXE
+            );
+            return;
+        }
+
+        if (state.isIn(BlockTags.SHOVEL_MINEABLE)) {
+            equipPreferredItem(context,
+                Items.NETHERITE_SHOVEL,
+                Items.DIAMOND_SHOVEL,
+                Items.IRON_SHOVEL,
+                Items.STONE_SHOVEL,
+                Items.GOLDEN_SHOVEL,
+                Items.WOODEN_SHOVEL
+            );
+        }
+    }
+
+    private boolean equipPreferredItem(BotContext context, Item... preferred) {
+        ClientPlayerEntity player = context.player();
+        ClientPlayerInteractionManager interaction = context.client().interactionManager;
+        ScreenHandler handler = player.playerScreenHandler;
+        if (interaction == null || handler == null) {
+            return false;
+        }
+
+        int invIndex = findInvIndex(player, preferred);
+        if (invIndex == -1) {
+            return false;
+        }
+
+        if (invIndex >= 9) {
+            interaction.clickSlot(handler.syncId, invIndex, 0, SlotActionType.SWAP, player);
+            selectHotbarSlot(player, 0);
+            return true;
+        }
+
+        if (invIndex != 0) {
+            interaction.clickSlot(handler.syncId, 36 + invIndex, 0, SlotActionType.SWAP, player);
+        }
+
+        selectHotbarSlot(player, 0);
+        return true;
+    }
+
+    private static void equipFist(ClientPlayerEntity player) {
+        for (int slot = 0; slot < 9; slot++) {
+            if (player.getInventory().getStack(slot).isEmpty()) {
+                selectHotbarSlot(player, slot);
+                return;
+            }
+        }
+    }
+
+    private static int findInvIndex(ClientPlayerEntity player, Item... preferred) {
+        for (Item item : preferred) {
+            for (int i = 0; i < player.getInventory().size(); i++) {
+                ItemStack stack = player.getInventory().getStack(i);
+                if (stack.isOf(item)) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static void selectHotbarSlot(ClientPlayerEntity player, int slot) {
+        player.getInventory().setSelectedSlot(slot);
+        if (player.networkHandler != null) {
+            player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        }
+    }
+
+    private static boolean isHighLogTooCloseAndNotVisible(BotContext context, BlockPos target) {
+        if (target == null) {
+            return false;
+        }
+
+        ClientPlayerEntity player = context.player();
+        if (target.getY() < player.getBlockY() + 1) {
+            return false;
+        }
+
+        double dx = target.getX() + 0.5 - player.getX();
+        double dz = target.getZ() + 0.5 - player.getZ();
+        if (dx * dx + dz * dz >= 1.4 * 1.4) {
+            return false;
+        }
+
+        return !canRayHitLog(context, player.getEyePos(), target);
+    }
+
+    private void repositionForHighLog(BotContext context, Vec3d targetCenter) {
+        ClientPlayerEntity player = context.player();
+        lookAt(player, targetCenter);
+        context.actions().setBack(true);
+        if ((ticks / 8) % 2 == 0) {
+            context.actions().setLeft(true);
+        } else {
+            context.actions().setRight(true);
+        }
+    }
+
     private static void moveToward(BotContext context, Vec3d target, int jumpPeriodTicks) {
         ClientPlayerEntity player = context.player();
         double dx = target.x - player.getX();
@@ -907,17 +1091,35 @@ public final class AutoMineNearestLogTask implements BotTask {
         // If the target is nearly directly overhead/underfoot, atan2 is undefined and
         // would cause the bot to spin in circles. Stand still and let the caller mine.
         if (dx * dx + dz * dz < 0.5 * 0.5) {
+            if (target.y - player.getEyeY() > 0.8) {
+                context.actions().setBack(true);
+                if ((player.age / 8) % 2 == 0) {
+                    context.actions().setLeft(true);
+                } else {
+                    context.actions().setRight(true);
+                }
+                if (player.isOnGround() && player.age % 6 == 0) {
+                    context.actions().setJump(true);
+                }
+            }
             return;
         }
 
         context.actions().setForward(true);
         context.actions().setSprint(true);
 
+        // While in water: press jump to swim upward and clamp pitch to horizontal so the
+        // bot doesn't dive by looking down.
+        if (player.isTouchingWater()) {
+            context.actions().setJump(true);
+        }
+
         // Add simple steering so the bot can path around trunks/leaves without hard retarget hops.
         float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
         player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -3.0F, 3.0F));
-        player.setPitch(MathHelper.clamp(player.getPitch(), -25.0F, 25.0F));
+        float pitchMax = player.isTouchingWater() ? 0.0F : 25.0F;
+        player.setPitch(MathHelper.clamp(player.getPitch(), -25.0F, pitchMax));
 
         if (yawDelta > 35.0F) {
             context.actions().setRight(true);
@@ -925,11 +1127,11 @@ public final class AutoMineNearestLogTask implements BotTask {
             context.actions().setLeft(true);
         }
 
-        // Jump immediately when a solid block is in front at feet or head level.
+        // Only perform obstacle jump logic when caller requested jumping.
         BlockPos aheadFeet = player.getBlockPos().offset(player.getHorizontalFacing());
         BlockPos aheadHead = aheadFeet.up();
         boolean blockedAhead = !context.world().getBlockState(aheadFeet).isAir() || !context.world().getBlockState(aheadHead).isAir();
-        if (player.isOnGround() && blockedAhead) {
+        if (jumpPeriodTicks > 0 && player.isOnGround() && blockedAhead) {
             context.actions().setJump(true);
         }
 

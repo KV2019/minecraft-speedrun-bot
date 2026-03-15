@@ -37,6 +37,8 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     private static final int RESULT_SLOT = 0;
     private static final int[] PLANK_SLOTS  = {1, 2, 3};
     private static final int[] STICK_SLOTS  = {5, 8};
+    private static final int TABLE_RECOVER_MAX_TICKS = 80;
+    private static final int TABLE_PICKUP_WINDOW_TICKS = 20;
 
     private State state;
     private int stateTicks;
@@ -49,6 +51,7 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     private enum CraftPhase { PLANKS, STICKS, TAKE_RESULT }
     private CraftPhase craftPhase;
     private int craftStepIndex;
+    private int tablePickupTicks;
 
     @Override
     public String name() {
@@ -64,6 +67,7 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         supportBlockPos = null;
         craftPhase = CraftPhase.PLANKS;
         craftStepIndex = 0;
+        tablePickupTicks = TABLE_PICKUP_WINDOW_TICKS;
         context.player().sendMessage(Text.literal("[SpeedrunBot] Crafting wooden pickaxe"), true);
     }
 
@@ -129,17 +133,17 @@ public final class CraftWoodenPickaxeTask implements BotTask {
             return;
         }
 
-        // Find a placement spot (air block at foot level with solid block below)
+        // First try nearby cardinal spots, then force look-down and rescan wider area.
         BlockPos origin = player.getBlockPos();
-        for (Direction dir : new Direction[]{Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST}) {
-            BlockPos candidate = origin.offset(dir);
-            BlockPos below = candidate.down();
-            if (context.world().getBlockState(candidate).isAir()
-                    && !context.world().getBlockState(below).isAir()) {
-                tableTargetPos = candidate.toImmutable();
-                supportBlockPos = below.toImmutable();
-                break;
-            }
+        PlacementSpot spot = findPlacementSpot(context, origin, 1);
+        if (spot == null) {
+            forceLookDown(player);
+            spot = findPlacementSpot(context, origin, 2);
+        }
+
+        if (spot != null) {
+            tableTargetPos = spot.tablePos();
+            supportBlockPos = spot.supportPos();
         }
 
         if (tableTargetPos == null) {
@@ -319,6 +323,49 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         if (context.client().currentScreen != null) {
             context.player().closeHandledScreen();
         }
+
+        if (tableTargetPos == null || stateTicks > TABLE_RECOVER_MAX_TICKS) {
+            actionCooldown = 2;
+            transition(State.DONE);
+            return;
+        }
+
+        boolean hasTableInInventory = countExact(context.player(), Items.CRAFTING_TABLE) > 0;
+        boolean tableStillPlaced = context.world().getBlockState(tableTargetPos).isOf(Blocks.CRAFTING_TABLE);
+
+        Vec3d tableCenter = Vec3d.ofCenter(tableTargetPos);
+        double distSq = context.player().squaredDistanceTo(tableCenter.x, tableCenter.y, tableCenter.z);
+
+        if (tableStillPlaced) {
+            if (distSq > 4.5 * 4.5) {
+                moveToward(context, tableCenter, 8);
+                return;
+            }
+
+            ClientPlayerInteractionManager interaction = context.client().interactionManager;
+            if (interaction != null) {
+                lookAt(context.player(), tableCenter);
+                Direction hitSide = sideClosestToPlayer(context.player(), tableCenter);
+                interaction.attackBlock(tableTargetPos, hitSide);
+                interaction.updateBlockBreakingProgress(tableTargetPos, hitSide);
+                context.player().swingHand(Hand.MAIN_HAND);
+                context.actions().setAttack(true);
+            }
+            return;
+        }
+
+        if (hasTableInInventory) {
+            actionCooldown = 2;
+            transition(State.DONE);
+            return;
+        }
+
+        if (tablePickupTicks > 0) {
+            tablePickupTicks--;
+            moveToward(context, tableCenter, 0);
+            return;
+        }
+
         actionCooldown = 2;
         transition(State.DONE);
     }
@@ -326,6 +373,40 @@ public final class CraftWoodenPickaxeTask implements BotTask {
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private record PlacementSpot(BlockPos tablePos, BlockPos supportPos) {}
+
+    private static PlacementSpot findPlacementSpot(BotContext context, BlockPos origin, int radius) {
+        for (int r = 1; r <= radius; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (Math.abs(dx) + Math.abs(dz) != r) {
+                        continue;
+                    }
+
+                    BlockPos candidate = origin.add(dx, 0, dz);
+                    BlockPos below = candidate.down();
+                    if (!context.world().getBlockState(candidate).isAir()) {
+                        continue;
+                    }
+                    if (!context.world().getBlockState(candidate.up()).isAir()) {
+                        continue;
+                    }
+                    if (context.world().getBlockState(below).isAir()) {
+                        continue;
+                    }
+
+                    return new PlacementSpot(candidate.toImmutable(), below.toImmutable());
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void forceLookDown(ClientPlayerEntity player) {
+        player.setPitch(Math.max(player.getPitch(), 65.0F));
+    }
 
     private void placeSingleItem(
             ClientPlayerInteractionManager interaction,
@@ -448,5 +529,12 @@ public final class CraftWoodenPickaxeTask implements BotTask {
                 && player.age % jumpPeriodTicks == 0) {
             context.actions().setJump(true);
         }
+    }
+
+    private static Direction sideClosestToPlayer(ClientPlayerEntity player, Vec3d blockCenter) {
+        double dx = player.getX() - blockCenter.x;
+        double dy = player.getEyeY() - blockCenter.y;
+        double dz = player.getZ() - blockCenter.z;
+        return Direction.getFacing(dx, dy, dz);
     }
 }
