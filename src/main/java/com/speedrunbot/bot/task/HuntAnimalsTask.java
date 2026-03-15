@@ -145,6 +145,7 @@ public final class HuntAnimalsTask implements BotTask {
     // Helpers
     // -------------------------------------------------------------------------
 
+    @SuppressWarnings("null")
     private AnimalEntity findNearestAnimal(BotContext context) {
         ClientPlayerEntity player = context.player();
         Vec3d pos = new Vec3d(player.getX(), player.getY(), player.getZ());
