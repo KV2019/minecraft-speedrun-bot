@@ -89,6 +89,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private BlockPos dropCollectPos;
     private int dropCollectTicks;
     private int dropCollectStartLogCount;
+    @SuppressWarnings("null")
     private final EnumMap<FailureReason, Integer> failureCounts = new EnumMap<>(FailureReason.class);
     private boolean summaryEmitted;
 

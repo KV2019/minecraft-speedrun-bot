@@ -12,6 +12,7 @@ import net.minecraft.text.Text;
 
 public final class BotController {
     private final PlayerActionController actionController = new PlayerActionController();
+    @SuppressWarnings("null")
     private final List<BotTask> tasks = List.of(
         new AutoMineNearestLogTask(),
         new CraftBasicWoodTask(),
