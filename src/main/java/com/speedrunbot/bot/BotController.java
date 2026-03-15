@@ -6,6 +6,7 @@ import com.speedrunbot.bot.task.CraftBasicWoodTask;
 import com.speedrunbot.bot.task.CraftWoodenPickaxeTask;
 import com.speedrunbot.bot.task.MineDownToStoneTask;
 import com.speedrunbot.bot.task.CraftStoneToolsTask;
+import com.speedrunbot.bot.task.HuntAnimalsTask;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Items;
@@ -21,7 +22,8 @@ public final class BotController {
         new CraftBasicWoodTask(),
         new CraftWoodenPickaxeTask(),
         new MineDownToStoneTask(),
-        new CraftStoneToolsTask()
+        new CraftStoneToolsTask(),
+        new HuntAnimalsTask()
     );
 
     private boolean running;
