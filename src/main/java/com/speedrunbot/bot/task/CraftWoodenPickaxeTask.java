@@ -323,49 +323,6 @@ public final class CraftWoodenPickaxeTask implements BotTask {
         if (context.client().currentScreen != null) {
             context.player().closeHandledScreen();
         }
-
-        if (tableTargetPos == null || stateTicks > TABLE_RECOVER_MAX_TICKS) {
-            actionCooldown = 2;
-            transition(State.DONE);
-            return;
-        }
-
-        boolean hasTableInInventory = countExact(context.player(), Items.CRAFTING_TABLE) > 0;
-        boolean tableStillPlaced = context.world().getBlockState(tableTargetPos).isOf(Blocks.CRAFTING_TABLE);
-
-        Vec3d tableCenter = Vec3d.ofCenter(tableTargetPos);
-        double distSq = context.player().squaredDistanceTo(tableCenter.x, tableCenter.y, tableCenter.z);
-
-        if (tableStillPlaced) {
-            if (distSq > 4.5 * 4.5) {
-                moveToward(context, tableCenter, 8);
-                return;
-            }
-
-            ClientPlayerInteractionManager interaction = context.client().interactionManager;
-            if (interaction != null) {
-                lookAt(context.player(), tableCenter);
-                Direction hitSide = sideClosestToPlayer(context.player(), tableCenter);
-                interaction.attackBlock(tableTargetPos, hitSide);
-                interaction.updateBlockBreakingProgress(tableTargetPos, hitSide);
-                context.player().swingHand(Hand.MAIN_HAND);
-                context.actions().setAttack(true);
-            }
-            return;
-        }
-
-        if (hasTableInInventory) {
-            actionCooldown = 2;
-            transition(State.DONE);
-            return;
-        }
-
-        if (tablePickupTicks > 0) {
-            tablePickupTicks--;
-            moveToward(context, tableCenter, 0);
-            return;
-        }
-
         actionCooldown = 2;
         transition(State.DONE);
     }

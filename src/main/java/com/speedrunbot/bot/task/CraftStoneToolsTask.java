@@ -346,6 +346,7 @@ public final class CraftStoneToolsTask implements BotTask {
 
             ClientPlayerInteractionManager interaction = context.client().interactionManager;
             if (interaction != null) {
+                equipBestAxe(context.player());
                 lookAt(context.player(), tableCenter);
                 Direction hitSide = sideClosestToPlayer(context.player(), tableCenter);
                 interaction.attackBlock(tableTargetPos, hitSide);
@@ -531,6 +532,36 @@ public final class CraftStoneToolsTask implements BotTask {
             if (s.isOf(item)) total += s.getCount();
         }
         return total;
+    }
+
+    private static void equipBestAxe(ClientPlayerEntity player) {
+        Item[] axes = {
+            Items.NETHERITE_AXE, Items.DIAMOND_AXE, Items.IRON_AXE,
+            Items.STONE_AXE, Items.GOLDEN_AXE, Items.WOODEN_AXE
+        };
+        for (Item axe : axes) {
+            int idx = findInvIndex(player, axe);
+            if (idx == -1) continue;
+            // Move to hotbar slot 0 if not already there
+            if (idx >= 9) {
+                // swap with slot 0
+                selectHotbarSlot(player, 0);
+                // use a direct inventory swap: just place it in hotbar 0 via pick-block-like trick
+                // Simplest: find a free hotbar slot or just overwrite slot 0
+                ItemStack tmp = player.getInventory().getStack(0);
+                player.getInventory().setStack(0, player.getInventory().getStack(idx));
+                player.getInventory().setStack(idx, tmp);
+            }
+            selectHotbarSlot(player, idx < 9 ? idx : 0);
+            return;
+        }
+        // No axe — equip empty hand (hotbar slot with no item)
+        for (int s = 0; s < 9; s++) {
+            if (player.getInventory().getStack(s).isEmpty()) {
+                selectHotbarSlot(player, s);
+                return;
+            }
+        }
     }
 
     private static void selectHotbarSlot(ClientPlayerEntity player, int slot) {
