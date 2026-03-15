@@ -5,6 +5,7 @@ import java.util.ArrayDeque;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
@@ -63,6 +64,8 @@ public final class AutoMineNearestLogTask implements BotTask {
     private static final int MAX_CLUSTER_SIZE = 192;
     private static final int TARGET_AVOID_TICKS = 100;
     private static final int DROP_COLLECTION_TICKS = 24;
+    private static final int LOG_TARGET_MIN = 5;
+    private static final int LOG_TARGET_MAX = 8;
 
     private MinerState state;
     private BlockPos targetLog;
@@ -89,6 +92,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private BlockPos dropCollectPos;
     private int dropCollectTicks;
     private int dropCollectStartLogCount;
+    private int targetLogCount;
     @SuppressWarnings("null")
     private final EnumMap<FailureReason, Integer> failureCounts = new EnumMap<>(FailureReason.class);
     private boolean summaryEmitted;
@@ -125,9 +129,10 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectPos = null;
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
+        targetLogCount = ThreadLocalRandom.current().nextInt(LOG_TARGET_MIN, LOG_TARGET_MAX + 1);
         resetFailureTelemetry();
         summaryEmitted = false;
-        context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs"), true);
+        context.player().sendMessage(Text.literal("[SpeedrunBot] Searching for nearby logs (goal: " + targetLogCount + ")"), true);
         debug(context, "start logs=" + startingLogItemCount);
     }
 
@@ -143,6 +148,10 @@ public final class AutoMineNearestLogTask implements BotTask {
             noLogTicks = 0;
             context.player().sendMessage(Text.literal("[SpeedrunBot] Collected log item"), true);
             debug(context, "collect gained=" + gained + " total=" + collectedLogs);
+
+            if (collectedLogs >= targetLogCount) {
+                transition(context, MinerState.DONE, "target_logs_reached=" + collectedLogs + "/" + targetLogCount);
+            }
         }
 
         if (awaitingServerConfirm) {
@@ -521,6 +530,7 @@ public final class AutoMineNearestLogTask implements BotTask {
         dropCollectPos = null;
         dropCollectTicks = 0;
         dropCollectStartLogCount = 0;
+        targetLogCount = 0;
         resetFailureTelemetry();
         summaryEmitted = false;
         debug(context, "stop");
@@ -703,6 +713,7 @@ public final class AutoMineNearestLogTask implements BotTask {
     private void emitRunSummary(BotContext context, String endReason) {
         summaryEmitted = true;
         String line = "[SpeedrunBot] Miner summary (" + endReason + ") logs=" + collectedLogs +
+            " goal=" + targetLogCount +
             " move=" + failureCount(FailureReason.NO_PROGRESS_MOVE) +
             " break=" + failureCount(FailureReason.NO_PROGRESS_BREAK) +
             " noLos=" + failureCount(FailureReason.NO_LOS_FALSE_NEGATIVE) +
